@@ -9,12 +9,17 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@google/genai": "^2.31.0",
+    "lucide-react": "^1.62.0",
+    "mammoth": "^1.13.0",
     "next": "16.4.3",
+    "pdf-parse": "^2.4.5",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },
   "devDependencies": {
     "@types/node": "^20",
+    "@types/pdf-parse": "^1.1.5",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
