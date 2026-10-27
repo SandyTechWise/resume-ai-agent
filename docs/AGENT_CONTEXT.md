@@ -178,7 +178,8 @@ npm run build
    - All provider `baseUrl` parameters are strictly validated prior to dispatch.
    - Enforces HTTPS (permitting HTTP only for loopback `localhost`/`127.0.0.1` during local dev).
    - Blocks cloud metadata IP addresses (`169.254.169.254`, `metadata.google.internal`).
-7. **Strict Typing Standards**:
+7. **Strict Coding Standards & Rule Files**:
    - Zero `any` policy across the entire codebase. All errors, payloads, and handlers are strongly typed.
    - Centralized constants in `src/constants/` manage all weights, keys, and routes.
    - Secrets are isolated in `.env.local` and never committed or transmitted to the client.
+   - For full architectural constraints, see [AGENTS.md](file:///Users/bharathi/Santhosh/resume-preparation/AGENTS.md) and [.agents/rules/coding_standards.md](file:///Users/bharathi/Santhosh/resume-preparation/.agents/rules/coding_standards.md).
