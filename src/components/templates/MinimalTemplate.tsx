@@ -13,8 +13,8 @@ export const MinimalTemplate: React.FC<TemplateProps> = ({ data, theme }) => {
     <div
       className="resume-sheet minimal-template"
       style={{
-        ['--theme-accent' as any]: theme.accentColor,
-      }}
+        ['--theme-accent' as string]: theme.accentColor,
+      } as React.CSSProperties}
     >
       {/* Header */}
       <header className="min-header">

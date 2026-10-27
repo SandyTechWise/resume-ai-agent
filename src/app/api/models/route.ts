@@ -1,285 +1,302 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { LLMProvider, PROVIDER_PRESETS, DiscoveredModel } from '@/types/llm';
+import { LLMProvider, DiscoveredModel, ModelDirectoryResponse } from '@/types/llm';
+import { 
+  PROVIDER_METADATA, 
+  NON_CHAT_MODEL_PATTERNS, 
+  PROVIDER_STANDARD_HEADERS 
+} from '@/constants/llm';
+import { HTTP_STATUS } from '@/constants/api';
+import { SECURITY_CONFIG } from '@/constants/security';
+import { validateApiBaseUrl } from '@/lib/security/urlValidator';
+import { ValidationError, AuthenticationError, ProviderApiError, handleApiError } from '@/lib/errors/AppError';
 
-export async function POST(req: NextRequest) {
-  let provider: LLMProvider = 'gemini';
+interface ModelsRequestBody {
+  provider?: LLMProvider;
+  apiKey?: string;
+  baseUrl?: string;
+  activeOnly?: boolean;
+  testModel?: string;
+}
+
+interface GeminiRawModel {
+  name: string;
+  displayName?: string;
+  description?: string;
+  supportedGenerationMethods?: string[];
+}
+
+interface OpenAiRawModel {
+  id: string;
+  name?: string;
+  display_name?: string;
+  description?: string;
+}
+
+export async function POST(req: NextRequest): Promise<NextResponse> {
   try {
-    const body = await req.json();
-    provider = body.provider || 'gemini';
-    const { 
-      apiKey, 
-      baseUrl, 
-      activeOnly = true,
-      testModel
-    } = body as {
-      apiKey: string;
-      baseUrl?: string;
-      activeOnly?: boolean;
-      testModel?: string;
-    };
+    let body: ModelsRequestBody;
+    try {
+      body = await req.json();
+    } catch {
+      throw new ValidationError('Malformed JSON payload.');
+    }
 
-    if (!apiKey || apiKey.trim().length < 3) {
-      return NextResponse.json(
-        { error: 'A valid API key is required to retrieve models.' },
-        { status: 400 }
+    const provider: LLMProvider = body.provider || 'gemini';
+    const apiKey = body.apiKey?.trim();
+    const activeOnly = body.activeOnly ?? true;
+    const testModel = body.testModel?.trim();
+
+    if (!apiKey || apiKey.length < SECURITY_CONFIG.MIN_API_KEY_LENGTH) {
+      throw new AuthenticationError(
+        `A valid API key is required to query ${PROVIDER_METADATA[provider]?.label || provider} models.`
       );
     }
 
-    const cleanKey = apiKey.trim();
-    const preset = PROVIDER_PRESETS[provider];
+    const preset = PROVIDER_METADATA[provider];
+    if (!preset) {
+      throw new ValidationError(`Unknown provider: "${provider}"`);
+    }
 
-    // Optional Quick Model Availability Ping
+    // SSRF URL Validation
+    const urlValidation = validateApiBaseUrl(body.baseUrl);
+    if (!urlValidation.isValid) {
+      throw new ValidationError(urlValidation.error || 'Invalid provider base URL.');
+    }
+    const resolvedBaseUrl = urlValidation.sanitizedUrl || preset.defaultBaseUrl;
+
+    // Optional Model Ping Test
     if (testModel) {
-      try {
-        if (provider === 'gemini') {
-          const { GoogleGenAI } = await import('@google/genai');
-          const ai = new GoogleGenAI({ apiKey: cleanKey });
-          await ai.models.generateContent({
-            model: testModel,
-            contents: 'hi',
-            config: { maxOutputTokens: 2 }
-          });
-          return NextResponse.json({
-            success: true,
-            modelTest: { model: testModel, ok: true }
-          });
-        }
-      } catch (testErr: any) {
-        let msg = testErr?.message || 'Model verification failed';
-        try {
-          const parsed = JSON.parse(msg);
-          if (parsed?.error?.message) msg = parsed.error.message;
-        } catch {
-          // not json
-        }
-        return NextResponse.json({
-          success: false,
-          modelTest: { model: testModel, ok: false, error: msg }
-        });
-      }
+      return await verifySingleModel(provider, apiKey, testModel, resolvedBaseUrl);
     }
 
     let discoveredModels: DiscoveredModel[] = [];
 
-    // 1. Google Gemini Live Models
+    // 1. Google Gemini Live Directory
     if (provider === 'gemini') {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${cleanKey}`;
-      const res = await fetch(url);
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`;
+      const res = await fetch(endpoint);
+
       if (!res.ok) {
-        const err = await res.text();
-        throw new Error(`Gemini API error (${res.status}): ${err}`);
+        const errorText = await res.text();
+        throw new ProviderApiError('Google Gemini', `Failed to query catalog (${res.status}): ${errorText}`);
       }
-      const data = await res.json();
+
+      const data = await res.json() as { models?: GeminiRawModel[] };
       const rawList = data.models || [];
 
-      const isGeminiDeprecated = (cleanId: string) => {
-        const lower = cleanId.toLowerCase();
-        // Specifically catch gemini-2.5-flash (which Google phased out for new users),
-        // gemini-1.0 series, legacy gemini-pro, PaLM bison models, embedding, aqa, imagen, learnlm
-        return (
-          lower.includes('2.5-flash') ||
-          lower.includes('1.0-') ||
-          lower === 'gemini-1.0' ||
-          lower === 'gemini-pro' ||
-          lower === 'gemini-pro-vision' ||
-          lower.includes('bison') ||
-          lower.includes('embedding') ||
-          lower.includes('aqa') ||
-          lower.includes('imagen') ||
-          lower.includes('learnlm')
-        );
-      };
-
-      const parsedGemini = rawList
-        .filter((m: any) => {
-          const isGeneration = m.supportedGenerationMethods?.includes('generateContent');
-          return isGeneration;
+      discoveredModels = rawList
+        .filter((m: GeminiRawModel) => {
+          // Dynamic capability check: model must support text generation
+          const isGeneration = m.supportedGenerationMethods?.includes('generateContent') ?? false;
+          const cleanId = m.name.replace(/^models\//, '').toLowerCase();
+          const isNonChat = NON_CHAT_MODEL_PATTERNS.some(token => cleanId.includes(token));
+          return isGeneration && !isNonChat;
         })
-        .map((m: any) => {
+        .map((m: GeminiRawModel): DiscoveredModel => {
           const cleanId = m.name.replace(/^models\//, '');
-          const deprecated = isGeminiDeprecated(cleanId);
-          const isRecommended = cleanId.includes('3.8-flash') || cleanId === 'gemini-1.5-flash';
-          
-          let category: 'flagship' | 'fast' | 'reasoning' | 'general' | 'legacy' = 'general';
-          if (deprecated) category = 'legacy';
-          else if (cleanId.includes('3.8') || cleanId.includes('3.5')) category = 'flagship';
-          else if (cleanId.includes('flash')) category = 'fast';
-          else if (cleanId.includes('pro')) category = 'reasoning';
+          const lowerId = cleanId.toLowerCase();
 
-          let badge = '';
-          if (cleanId.includes('3.8-flash')) badge = ' ⭐ Recommended Flagship';
-          else if (cleanId === 'gemini-1.5-flash') badge = ' ⚡ Fast & Stable';
-          else if (cleanId === 'gemini-1.5-pro') badge = ' 🧠 Deep Reasoning';
-          else if (cleanId.includes('2.0-flash')) badge = ' 🚀 Next-Gen Multimodal';
-          else if (deprecated) badge = ' ⚠️ Deprecated (Unavailable)';
+          // Dynamic category classification
+          let category: DiscoveredModel['category'] = 'general';
+          if (lowerId.includes('flash')) category = 'fast';
+          else if (lowerId.includes('pro')) category = 'reasoning';
+          else if (lowerId.includes('ultra')) category = 'flagship';
 
           return {
             id: cleanId,
-            label: `${m.displayName || cleanId}${badge}`,
+            label: `${m.displayName || cleanId} (${cleanId})`,
             displayName: m.displayName || cleanId,
             description: m.description,
-            isRecommended,
-            status: deprecated ? ('deprecated' as const) : ('active' as const),
+            status: 'active',
             category
           };
         });
 
-      // Filter activeOnly if requested (default true)
-      discoveredModels = activeOnly
-        ? parsedGemini.filter((m: DiscoveredModel) => m.status === 'active')
-        : parsedGemini;
-
-      // Ensure flagship models exist in list even if provider returned legacy snapshot list
-      const essentialGemini = [
-        { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash ⭐ Recommended Flagship', displayName: 'Gemini 3.8 Flash', isRecommended: true, status: 'active' as const, category: 'flagship' as const },
-        { id: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash ⚡ Fast & Stable', displayName: 'Gemini 1.5 Flash', isRecommended: true, status: 'active' as const, category: 'fast' as const },
-        { id: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro 🧠 Deep Reasoning', displayName: 'Gemini 1.5 Pro', isRecommended: false, status: 'active' as const, category: 'reasoning' as const },
-        { id: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash 🚀 Next-Gen Multimodal', displayName: 'Gemini 2.0 Flash', isRecommended: false, status: 'active' as const, category: 'flagship' as const }
-      ];
-
-      essentialGemini.forEach((def) => {
-        if (!discoveredModels.some((m) => m.id === def.id)) {
-          discoveredModels.unshift(def);
-        }
-      });
-
-      // Sort so recommended & flagship models appear first
-      discoveredModels.sort((a, b) => {
-        const aId = a.id.toLowerCase();
-        const bId = b.id.toLowerCase();
-        if (aId.includes('3.8-flash')) return -1;
-        if (bId.includes('3.8-flash')) return 1;
-        if (aId.includes('1.5-flash')) return -1;
-        if (bId.includes('1.5-flash')) return 1;
-        if (a.status === 'active' && b.status === 'deprecated') return -1;
-        if (a.status === 'deprecated' && b.status === 'active') return 1;
-        return aId.localeCompare(bId);
-      });
+      // Sort alphabetically by ID
+      discoveredModels.sort((a, b) => a.id.localeCompare(b.id));
     }
 
-    // 2. Anthropic Claude Live Models
+    // 2. Anthropic Claude Live Directory
     else if (provider === 'anthropic') {
-      const targetBase = baseUrl || preset?.defaultBaseUrl || 'https://api.anthropic.com/v1';
-      const url = `${targetBase.replace(/\/+$/, '')}/models`;
-      const res = await fetch(url, {
+      const endpoint = `${(resolvedBaseUrl || 'https://api.anthropic.com/v1').replace(/\/+$/, '')}/models`;
+      const res = await fetch(endpoint, {
         headers: {
-          'x-api-key': cleanKey,
-          'anthropic-version': '2023-06-01'
+          'x-api-key': apiKey,
+          'anthropic-version': PROVIDER_STANDARD_HEADERS.ANTHROPIC_VERSION
         }
       });
+
       if (!res.ok) {
-        const err = await res.text();
-        throw new Error(`Anthropic API error (${res.status}): ${err}`);
+        const errorText = await res.text();
+        throw new ProviderApiError('Anthropic Claude', `Catalog request failed (${res.status}): ${errorText}`);
       }
-      const data = await res.json();
+
+      const data = await res.json() as { data?: OpenAiRawModel[] };
       const rawList = data.data || [];
-      discoveredModels = rawList.map((m: any) => {
-        const id = m.id;
-        const isRecommended = id.includes('3-5-haiku') || id.includes('3-7-sonnet');
-        let badge = '';
-        if (id.includes('3-5-haiku')) badge = ' ⚡ Recommended (Ultra-Fast)';
-        else if (id.includes('3-7-sonnet')) badge = ' ⭐ Latest Flagship';
-        else if (id.includes('3-5-sonnet')) badge = ' 🧠 Frontier Reasoning';
+
+      discoveredModels = rawList.map((m: OpenAiRawModel): DiscoveredModel => {
+        const lowerId = m.id.toLowerCase();
+        let category: DiscoveredModel['category'] = 'general';
+        if (lowerId.includes('haiku')) category = 'fast';
+        else if (lowerId.includes('sonnet') || lowerId.includes('opus')) category = 'flagship';
 
         return {
           id: m.id,
-          label: `${m.display_name || m.id}${badge}`,
-          displayName: m.display_name || m.id,
-          isRecommended,
-          status: 'active' as const,
-          category: (id.includes('haiku') ? 'fast' : id.includes('sonnet') ? 'flagship' : 'general') as any
+          label: `${m.display_name || m.name || m.id} (${m.id})`,
+          displayName: m.display_name || m.name || m.id,
+          status: 'active',
+          category
         };
       });
 
-      discoveredModels.sort((a, b) => {
-        if (a.isRecommended && !b.isRecommended) return -1;
-        if (!a.isRecommended && b.isRecommended) return 1;
-        return a.id.localeCompare(b.id);
-      });
+      discoveredModels.sort((a, b) => a.id.localeCompare(b.id));
     }
 
-    // 3. OpenAI & OpenAI-Compatible (OpenAI, NVIDIA NIM, Groq, OpenRouter, Custom / Ollama)
+    // 3. OpenAI & OpenAI-Compatible Endpoints (NVIDIA NIM, Groq, OpenRouter, Custom / Ollama)
     else {
-      const targetBase = (baseUrl || preset?.defaultBaseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '');
-      const url = `${targetBase}/models`;
-
-      const res = await fetch(url, {
+      const endpoint = `${(resolvedBaseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '')}/models`;
+      const res = await fetch(endpoint, {
         headers: {
-          'Authorization': `Bearer ${cleanKey}`,
-          ...(provider === 'openrouter' ? { 'HTTP-Referer': 'https://resumeagent.ai', 'X-Title': 'ResumeAgent AI' } : {})
+          'Authorization': `Bearer ${apiKey}`,
+          ...(provider === 'openrouter' ? {
+            'HTTP-Referer': PROVIDER_STANDARD_HEADERS.OPENROUTER_REFERER,
+            'X-Title': PROVIDER_STANDARD_HEADERS.OPENROUTER_TITLE
+          } : {})
         }
       });
 
       if (!res.ok) {
-        const err = await res.text();
-        throw new Error(`${preset?.label || provider} API error (${res.status}): ${err}`);
+        const errorText = await res.text();
+        throw new ProviderApiError(preset.label, `Model lookup failed (${res.status}): ${errorText}`);
       }
 
-      const data = await res.json();
+      const data = await res.json() as { data?: OpenAiRawModel[] };
       const rawList = data.data || [];
 
-      // Filter out non-chat models (embeddings, audio, image models, legacy completions)
-      const ignoredTokens = [
-        'dall-e', 'whisper', 'tts', 'embedding', 'moderation', 
-        'babbage', 'davinci', 'curie', 'canary', 'instruct', 'realtime', 'audio'
-      ];
-
       discoveredModels = rawList
-        .filter((m: any) => {
-          const id = (m.id || '').toLowerCase();
-          return !ignoredTokens.some(t => id.includes(t));
+        .filter((m: OpenAiRawModel) => {
+          const lowerId = (m.id || '').toLowerCase();
+          return !NON_CHAT_MODEL_PATTERNS.some(token => lowerId.includes(token));
         })
-        .map((m: any) => {
-          const id = m.id;
-          const lower = id.toLowerCase();
-          const isRecommended = lower.includes('4o-mini') || lower.includes('llama-3.3-70b') || lower.includes('llama-3.1-70b');
-          
-          let badge = '';
-          if (lower.includes('4o-mini')) badge = ' ⚡ Recommended Fast';
-          else if (lower.includes('4o')) badge = ' ⭐ Flagship';
-          else if (lower.includes('o3-mini') || lower.includes('o1-mini')) badge = ' 🧠 Deep Reasoning';
-          else if (lower.includes('llama-3.3-70b')) badge = ' ⭐ Flagship Versatile';
+        .map((m: OpenAiRawModel): DiscoveredModel => {
+          const lowerId = m.id.toLowerCase();
+          let category: DiscoveredModel['category'] = 'general';
+          if (lowerId.includes('mini') || lowerId.includes('instant') || lowerId.includes('flash') || lowerId.includes('haiku')) {
+            category = 'fast';
+          } else if (lowerId.includes('o1') || lowerId.includes('o3') || lowerId.includes('reason')) {
+            category = 'reasoning';
+          } else if (lowerId.includes('gpt-4') || lowerId.includes('claude-3') || lowerId.includes('llama-3')) {
+            category = 'flagship';
+          }
 
           return {
             id: m.id,
-            label: `${m.name || m.id}${badge}`,
+            label: m.name ? `${m.name} (${m.id})` : m.id,
             displayName: m.name || m.id,
-            isRecommended,
-            status: 'active' as const,
-            category: (lower.includes('mini') || lower.includes('instant') ? 'fast' : lower.includes('o1') || lower.includes('o3') ? 'reasoning' : 'flagship') as any
+            status: 'active',
+            category
           };
         });
 
-      // Sort models so that modern flagship models appear first
-      discoveredModels.sort((a, b) => {
-        const aId = a.id.toLowerCase();
-        const bId = b.id.toLowerCase();
-        const isFlagshipA = aId.includes('gpt-4') || aId.includes('claude-3') || aId.includes('llama-3') || aId.includes('gemini') || aId.includes('deepseek');
-        const isFlagshipB = bId.includes('gpt-4') || bId.includes('claude-3') || bId.includes('llama-3') || bId.includes('gemini') || bId.includes('deepseek');
-        if (isFlagshipA && !isFlagshipB) return -1;
-        if (!isFlagshipA && isFlagshipB) return 1;
-        return aId.localeCompare(bId);
-      });
+      discoveredModels.sort((a, b) => a.id.localeCompare(b.id));
     }
 
-    return NextResponse.json({
+    const responsePayload: ModelDirectoryResponse = {
       success: true,
       provider,
       activeOnly,
       count: discoveredModels.length,
       models: discoveredModels
+    };
+
+    return NextResponse.json(responsePayload, { status: HTTP_STATUS.OK });
+  } catch (error: unknown) {
+    return handleApiError(error, 'Failed to retrieve models from provider.');
+  }
+}
+
+/**
+ * Perform a lightweight verification ping for a specific model ID
+ */
+async function verifySingleModel(
+  provider: LLMProvider,
+  apiKey: string,
+  modelId: string,
+  baseUrl?: string
+): Promise<NextResponse> {
+  try {
+    if (provider === 'gemini') {
+      const { GoogleGenAI } = await import('@google/genai');
+      const ai = new GoogleGenAI({ apiKey });
+      await ai.models.generateContent({
+        model: modelId,
+        contents: 'ping',
+        config: { maxOutputTokens: 2 }
+      });
+      return NextResponse.json({
+        success: true,
+        modelTest: { model: modelId, ok: true }
+      }, { status: HTTP_STATUS.OK });
+    }
+
+    // For OpenAI and Anthropic compatible providers, make a 1-token test ping
+    const endpoint = provider === 'anthropic'
+      ? `${(baseUrl || 'https://api.anthropic.com/v1').replace(/\/+$/, '')}/messages`
+      : `${(baseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '')}/chat/completions`;
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json'
+    };
+
+    let bodyPayload: string;
+
+    if (provider === 'anthropic') {
+      headers['x-api-key'] = apiKey;
+      headers['anthropic-version'] = PROVIDER_STANDARD_HEADERS.ANTHROPIC_VERSION;
+      bodyPayload = JSON.stringify({
+        model: modelId,
+        max_tokens: 2,
+        messages: [{ role: 'user', content: 'ping' }]
+      });
+    } else {
+      headers['Authorization'] = `Bearer ${apiKey}`;
+      bodyPayload = JSON.stringify({
+        model: modelId,
+        max_tokens: 2,
+        messages: [{ role: 'user', content: 'ping' }]
+      });
+    }
+
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers,
+      body: bodyPayload
     });
-  } catch (error: any) {
-    console.error('Error fetching live models:', error);
-    return NextResponse.json(
-      {
+
+    if (!res.ok) {
+      const errorText = await res.text();
+      let message = errorText;
+      try {
+        const parsed = JSON.parse(errorText);
+        if (parsed?.error?.message) message = parsed.error.message;
+      } catch {
+        // not JSON
+      }
+      return NextResponse.json({
         success: false,
-        error: error?.message || 'Failed to retrieve live models from provider.',
-        fallbackModels: (provider && PROVIDER_PRESETS[provider as LLMProvider]) 
-          ? PROVIDER_PRESETS[provider as LLMProvider].popularModels 
-          : PROVIDER_PRESETS.gemini.popularModels
-      },
-      { status: 500 }
-    );
+        modelTest: { model: modelId, ok: false, error: message }
+      }, { status: HTTP_STATUS.OK });
+    }
+
+    return NextResponse.json({
+      success: true,
+      modelTest: { model: modelId, ok: true }
+    }, { status: HTTP_STATUS.OK });
+  } catch (error: unknown) {
+    const errorMsg = error instanceof Error ? error.message : 'Model ping verification failed.';
+    return NextResponse.json({
+      success: false,
+      modelTest: { model: modelId, ok: false, error: errorMsg }
+    }, { status: HTTP_STATUS.OK });
   }
 }

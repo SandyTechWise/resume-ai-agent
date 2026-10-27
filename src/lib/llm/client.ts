@@ -1,4 +1,11 @@
-import { LLMConfig, PROVIDER_PRESETS } from '@/types/llm';
+import { LLMConfig, LLMProvider } from '@/types/llm';
+import { 
+  PROVIDER_METADATA, 
+  PROVIDER_STANDARD_HEADERS, 
+  LLM_GENERATION_DEFAULTS 
+} from '@/constants/llm';
+import { validateApiBaseUrl } from '@/lib/security/urlValidator';
+import { ValidationError, AuthenticationError, ProviderApiError } from '@/lib/errors/AppError';
 
 export interface GenerateTextOptions {
   config: LLMConfig;
@@ -7,19 +14,48 @@ export interface GenerateTextOptions {
   jsonMode?: boolean;
 }
 
+interface ChatCompletionMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
+
+interface ChatCompletionResponse {
+  choices?: {
+    message?: {
+      content?: string;
+    };
+  }[];
+}
+
+interface AnthropicResponse {
+  content?: {
+    text?: string;
+  }[];
+}
+
 export async function generateTextWithLLM({
   config,
   systemPrompt,
   userPrompt,
   jsonMode = false
 }: GenerateTextOptions): Promise<string> {
-  const provider = config.provider || 'gemini';
-  const preset = PROVIDER_PRESETS[provider];
-  const model = config.model || preset?.defaultModel || 'gpt-4o-mini';
-  const apiKey = config.apiKey;
+  const provider: LLMProvider = config.provider || 'gemini';
+  const meta = PROVIDER_METADATA[provider];
+  const apiKey = config.apiKey?.trim();
+  const model = config.model?.trim();
 
   if (!apiKey) {
-    throw new Error(`API Key is missing for provider: ${provider}`);
+    throw new AuthenticationError(`API Key is missing for provider: ${meta?.label || provider}`);
+  }
+
+  if (!model) {
+    throw new ValidationError(`Model identifier is required. Please select an active model in AI Settings.`);
+  }
+
+  // Validate Base URL (SSRF protection)
+  const urlValidation = validateApiBaseUrl(config.baseUrl);
+  if (!urlValidation.isValid) {
+    throw new ValidationError(urlValidation.error || 'Invalid API base URL.');
   }
 
   // 1. Google Gemini Provider
@@ -30,72 +66,36 @@ export async function generateTextWithLLM({
       ? `${systemPrompt}\n\nUSER REQUEST:\n${userPrompt}`
       : userPrompt;
 
-    // Automatically normalize deprecated or legacy Gemini models
-    let targetModel = model ? model.replace(/^models\//, '') : 'gemini-3.8-flash';
-    const lowerModel = targetModel.toLowerCase();
-    if (
-      lowerModel.includes('2.5-flash') ||
-      lowerModel.includes('1.0-') ||
-      lowerModel === 'gemini-1.0' ||
-      lowerModel === 'gemini-pro' ||
-      lowerModel === 'gemini-pro-vision'
-    ) {
-      console.warn(`Redirecting retired model ${targetModel} to active flagship gemini-3.8-flash`);
-      targetModel = 'gemini-3.8-flash';
-    }
-
     try {
       const res = await ai.models.generateContent({
-        model: targetModel,
+        model,
         contents: fullPrompt,
         config: jsonMode ? { responseMimeType: 'application/json' } : undefined
       });
 
       const output = res.text || '';
       return cleanJsonResponse(output);
-    } catch (err: any) {
-      const errString = `${err?.message || ''} ${err?.status || ''} ${JSON.stringify(err || {})}`;
-      // Self-healing: if model is retired/not found, auto-fallback to active flagship or stable 1.5-flash
-      if (
-        errString.includes('no longer available') || 
-        errString.includes('404') || 
-        errString.includes('NOT_FOUND') ||
-        errString.includes('not found')
-      ) {
-        console.warn(`Gemini model ${targetModel} returned 404/deprecated. Self-healing auto-fallback executing...`);
+    } catch (err: unknown) {
+      const errorMessage = extractErrorMessage(err);
+      if (jsonMode && errorMessage.toLowerCase().includes('json mode is not enabled')) {
         try {
-          const fallbackModel = targetModel === 'gemini-3.8-flash' ? 'gemini-1.5-flash' : 'gemini-3.8-flash';
-          const res = await ai.models.generateContent({
-            model: fallbackModel,
-            contents: fullPrompt,
-            config: jsonMode ? { responseMimeType: 'application/json' } : undefined
+          const fallbackRes = await ai.models.generateContent({
+            model,
+            contents: `${fullPrompt}\n\nIMPORTANT: Return ONLY valid JSON matching the requested schema. No conversational text.`
           });
-          const output = res.text || '';
+          const output = fallbackRes.text || '';
           return cleanJsonResponse(output);
-        } catch (fallbackErr: any) {
-          console.warn('Fallback failed, attempting universal gemini-1.5-flash safety net...');
-          const res = await ai.models.generateContent({
-            model: 'gemini-1.5-flash',
-            contents: fullPrompt,
-            config: jsonMode ? { responseMimeType: 'application/json' } : undefined
-          });
-          const output = res.text || '';
-          return cleanJsonResponse(output);
+        } catch (retryErr: unknown) {
+          throw new ProviderApiError('Google Gemini', extractErrorMessage(retryErr));
         }
       }
-      
-      let userFriendly = err?.message || 'Gemini API call failed';
-      try {
-        const parsed = JSON.parse(userFriendly);
-        if (parsed?.error?.message) userFriendly = parsed.error.message;
-      } catch {}
-      throw new Error(userFriendly);
+      throw new ProviderApiError('Google Gemini', errorMessage);
     }
   }
 
   // 2. Anthropic Claude Provider
   if (provider === 'anthropic') {
-    const baseUrl = config.baseUrl || preset?.defaultBaseUrl || 'https://api.anthropic.com/v1';
+    const baseUrl = urlValidation.sanitizedUrl || meta?.defaultBaseUrl || 'https://api.anthropic.com/v1';
     const endpoint = `${baseUrl.replace(/\/+$/, '')}/messages`;
 
     const res = await fetch(endpoint, {
@@ -103,11 +103,11 @@ export async function generateTextWithLLM({
       headers: {
         'Content-Type': 'application/json',
         'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01'
+        'anthropic-version': PROVIDER_STANDARD_HEADERS.ANTHROPIC_VERSION
       },
       body: JSON.stringify({
-        model: model || 'claude-3-5-haiku-20241022',
-        max_tokens: 4096,
+        model,
+        max_tokens: LLM_GENERATION_DEFAULTS.MAX_OUTPUT_TOKENS,
         ...(systemPrompt ? { system: systemPrompt } : {}),
         messages: [{ role: 'user', content: userPrompt }]
       })
@@ -115,28 +115,28 @@ export async function generateTextWithLLM({
 
     if (!res.ok) {
       const errText = await res.text();
-      throw new Error(`Anthropic API error (${res.status}): ${errText}`);
+      throw new ProviderApiError('Anthropic Claude', `Inference request failed (${res.status}): ${errText}`);
     }
 
-    const data = await res.json();
+    const data = await res.json() as AnthropicResponse;
     const content = data.content?.[0]?.text || '';
     return cleanJsonResponse(content);
   }
 
   // 3. OpenAI & OpenAI-Compatible Endpoints (NVIDIA NIM, Groq, OpenRouter, Custom / Ollama)
-  const baseUrl = (config.baseUrl || preset?.defaultBaseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '');
+  const baseUrl = (urlValidation.sanitizedUrl || meta?.defaultBaseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '');
   const endpoint = `${baseUrl}/chat/completions`;
 
-  const messages = [];
+  const messages: ChatCompletionMessage[] = [];
   if (systemPrompt) {
     messages.push({ role: 'system', content: systemPrompt });
   }
   messages.push({ role: 'user', content: userPrompt });
 
-  const bodyPayload: any = {
+  const bodyPayload: Record<string, unknown> = {
     model,
     messages,
-    temperature: 0.2
+    temperature: LLM_GENERATION_DEFAULTS.TEMPERATURE
   };
 
   if (jsonMode && (provider === 'openai' || provider === 'groq' || provider === 'openrouter')) {
@@ -148,24 +148,43 @@ export async function generateTextWithLLM({
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`,
-      ...(provider === 'openrouter' ? { 'HTTP-Referer': 'https://resumeagent.ai', 'X-Title': 'ResumeAgent AI' } : {})
+      ...(provider === 'openrouter' ? {
+        'HTTP-Referer': PROVIDER_STANDARD_HEADERS.OPENROUTER_REFERER,
+        'X-Title': PROVIDER_STANDARD_HEADERS.OPENROUTER_TITLE
+      } : {})
     },
     body: JSON.stringify(bodyPayload)
   });
 
   if (!res.ok) {
     const errText = await res.text();
-    throw new Error(`${preset?.label || provider} API error (${res.status}): ${errText}`);
+    throw new ProviderApiError(meta?.label || provider, `Inference call failed (${res.status}): ${errText}`);
   }
 
-  const data = await res.json();
+  const data = await res.json() as ChatCompletionResponse;
   const text = data.choices?.[0]?.message?.content || '';
   return cleanJsonResponse(text);
 }
 
+function extractErrorMessage(err: unknown): string {
+  if (err instanceof Error) {
+    let msg = err.message;
+    try {
+      const parsed = JSON.parse(msg);
+      if (parsed?.error?.message) {
+        msg = parsed.error.message;
+      }
+    } catch {
+      // not JSON
+    }
+    return msg;
+  }
+  if (typeof err === 'string') return err;
+  return 'Unknown provider error occurred during model inference.';
+}
+
 function cleanJsonResponse(raw: string): string {
   let cleaned = raw.trim();
-  // Strip ```json and ``` if returned
   if (cleaned.startsWith('```json')) {
     cleaned = cleaned.replace(/^```json\s*/, '').replace(/\s*```$/, '');
   } else if (cleaned.startsWith('```')) {

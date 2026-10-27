@@ -2,43 +2,57 @@ import { ResumeData, AtsScoreDetails } from '../types/resume';
 import { LLMConfig } from '../types/llm';
 import { generateTextWithLLM } from './llm/client';
 import { heuristicExtractResume } from './documentParser';
-
-// Common ATS action verbs for local evaluation
-const ACTION_VERBS = [
-  'architected', 'spearheaded', 'engineered', 'optimized', 'delivered', 'automated',
-  'streamlined', 'reduced', 'accelerated', 'increased', 'built', 'designed', 'developed',
-  'orchestrated', 'implemented', 'scaled', 'mentored', 'modernized', 'transformed'
-];
+import { 
+  ACTION_VERBS, 
+  ATS_SCORING_WEIGHTS, 
+  BASELINE_TECH_KEYWORDS, 
+  COMMON_STOP_WORDS 
+} from '@/constants/ats';
 
 function resolveLLMConfig(input?: LLMConfig | string): LLMConfig | null {
   if (!input) {
     if (process.env.GEMINI_API_KEY) {
-      return { provider: 'gemini', apiKey: process.env.GEMINI_API_KEY, model: 'gemini-3.8-flash' };
+      return { 
+        provider: 'gemini', 
+        apiKey: process.env.GEMINI_API_KEY, 
+        model: process.env.GEMINI_MODEL 
+      };
     }
     if (process.env.OPENAI_API_KEY) {
-      return { provider: 'openai', apiKey: process.env.OPENAI_API_KEY, model: 'gpt-4o-mini' };
+      return { 
+        provider: 'openai', 
+        apiKey: process.env.OPENAI_API_KEY, 
+        model: process.env.OPENAI_MODEL 
+      };
     }
     if (process.env.ANTHROPIC_API_KEY) {
-      return { provider: 'anthropic', apiKey: process.env.ANTHROPIC_API_KEY, model: 'claude-3-5-haiku-20241022' };
+      return { 
+        provider: 'anthropic', 
+        apiKey: process.env.ANTHROPIC_API_KEY, 
+        model: process.env.ANTHROPIC_MODEL 
+      };
     }
     if (process.env.NVIDIA_API_KEY) {
-      return { provider: 'nvidia', apiKey: process.env.NVIDIA_API_KEY, model: 'meta/llama-3.1-70b-instruct' };
+      return { 
+        provider: 'nvidia', 
+        apiKey: process.env.NVIDIA_API_KEY, 
+        model: process.env.NVIDIA_MODEL 
+      };
     }
     return null;
   }
 
   if (typeof input === 'string') {
-    // Legacy support where plain string was treated as Gemini key or OpenAI key
     if (input.startsWith('sk-ant-')) {
-      return { provider: 'anthropic', apiKey: input };
+      return { provider: 'anthropic', apiKey: input, model: process.env.ANTHROPIC_MODEL };
     } else if (input.startsWith('sk-') || input.startsWith('sk-proj-')) {
-      return { provider: 'openai', apiKey: input };
+      return { provider: 'openai', apiKey: input, model: process.env.OPENAI_MODEL };
     } else if (input.startsWith('nvapi-')) {
-      return { provider: 'nvidia', apiKey: input };
+      return { provider: 'nvidia', apiKey: input, model: process.env.NVIDIA_MODEL };
     } else if (input.startsWith('gsk_')) {
-      return { provider: 'groq', apiKey: input };
+      return { provider: 'groq', apiKey: input, model: process.env.GROQ_MODEL };
     }
-    return { provider: 'gemini', apiKey: input, model: 'gemini-3.8-flash' };
+    return { provider: 'gemini', apiKey: input, model: process.env.GEMINI_MODEL };
   }
 
   return input;
@@ -216,20 +230,23 @@ export function computeLocalAtsScore(
   });
 
   const impactRatio = totalBullets > 0 ? (metricBullets * 0.6 + actionVerbBullets * 0.4) / totalBullets : 0.5;
-  const impactScore = Math.min(25, Math.round(impactRatio * 25));
+  const impactScore = Math.min(
+    ATS_SCORING_WEIGHTS.MAX_IMPACT_SCORE,
+    Math.round(impactRatio * ATS_SCORING_WEIGHTS.MAX_IMPACT_SCORE)
+  );
 
   // 4. Keyword Score (max 25)
   const resumeText = JSON.stringify(resume).toLowerCase();
   let matchedKeywords: string[] = [];
   let missingKeywords: string[] = [];
-  let keywordsScore = 20;
+  let keywordsScore: number = ATS_SCORING_WEIGHTS.DEFAULT_BASELINE_KEYWORDS_SCORE;
 
   if (jobDescription && jobDescription.trim().length > 20) {
     const jdWords = jobDescription
       .toLowerCase()
       .replace(/[^a-z0-9#+.\s]/g, ' ')
       .split(/\s+/)
-      .filter(w => w.length > 3 && !['with', 'that', 'from', 'have', 'this', 'will', 'your', 'about', 'team', 'work'].includes(w));
+      .filter(w => w.length > 3 && !COMMON_STOP_WORDS.includes(w));
 
     const wordFreq: Record<string, number> = {};
     jdWords.forEach(w => { wordFreq[w] = (wordFreq[w] || 0) + 1; });
@@ -242,16 +259,20 @@ export function computeLocalAtsScore(
     missingKeywords = topJdKeywords.filter(k => !resumeText.includes(k));
 
     keywordsScore = topJdKeywords.length > 0
-      ? Math.round((matchedKeywords.length / topJdKeywords.length) * 25)
-      : 20;
+      ? Math.round((matchedKeywords.length / topJdKeywords.length) * ATS_SCORING_WEIGHTS.MAX_KEYWORDS_SCORE)
+      : ATS_SCORING_WEIGHTS.DEFAULT_BASELINE_KEYWORDS_SCORE;
   } else {
-    const commonTech = ['react', 'typescript', 'python', 'aws', 'api', 'docker', 'ci/cd', 'agile', 'database', 'git'];
-    matchedKeywords = commonTech.filter(k => resumeText.includes(k));
-    missingKeywords = commonTech.filter(k => !resumeText.includes(k)).slice(0, 4);
-    keywordsScore = Math.round((matchedKeywords.length / commonTech.length) * 25);
+    matchedKeywords = BASELINE_TECH_KEYWORDS.filter(k => resumeText.includes(k));
+    missingKeywords = BASELINE_TECH_KEYWORDS.filter(k => !resumeText.includes(k)).slice(0, 4);
+    keywordsScore = Math.round(
+      (matchedKeywords.length / BASELINE_TECH_KEYWORDS.length) * ATS_SCORING_WEIGHTS.MAX_KEYWORDS_SCORE
+    );
   }
 
-  const overallScore = Math.min(100, Math.max(20, contactScore + formattingScore + impactScore + keywordsScore));
+  const overallScore = Math.min(
+    ATS_SCORING_WEIGHTS.MAX_OVERALL_SCORE,
+    Math.max(20, contactScore + formattingScore + impactScore + keywordsScore)
+  );
 
   const recommendations: string[] = [];
   if (missingKeywords.length > 0) {
@@ -581,14 +602,17 @@ Return ONLY valid JSON matching this schema:
       atsAnalysis: finalAts,
       summaryOfChanges: parsed.summaryOfChanges || `Successfully composed resume in "${mode}" mode.`
     };
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.warn(`AI compose error in mode ${mode}:`, err);
-    let friendlyError = err?.message || 'AI provider request failed';
-    try {
-      const parsed = JSON.parse(friendlyError);
-      if (parsed?.error?.message) friendlyError = parsed.error.message;
-    } catch {
-      // not json
+    let friendlyError = 'AI provider request failed';
+    if (err instanceof Error) {
+      friendlyError = err.message;
+      try {
+        const parsed = JSON.parse(friendlyError);
+        if (parsed?.error?.message) friendlyError = parsed.error.message;
+      } catch {
+        // not json
+      }
     }
     const fallbackResume = baseResume || heuristicExtractResume(userInput);
     return {

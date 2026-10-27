@@ -2,7 +2,9 @@
 
 import React, { useState, useEffect } from 'react';
 import { ResumeData, ResumeTheme, AtsScoreDetails } from '@/types/resume';
-import { LLMConfig, PROVIDER_PRESETS } from '@/types/llm';
+import { LLMConfig } from '@/types/llm';
+import { STORAGE_KEYS } from '@/constants/storage';
+import { PROVIDER_METADATA } from '@/constants/llm';
 import { sampleResume } from '@/data/sampleResume';
 import { computeLocalAtsScore } from '@/lib/gemini';
 import { Navbar } from '@/components/Navbar';
@@ -25,7 +27,7 @@ export default function HomePage() {
   const [llmConfig, setLlmConfig] = useState<LLMConfig>({
     provider: 'gemini',
     apiKey: '',
-    model: 'gemini-3.8-flash'
+    model: ''
   });
 
   const [theme, setTheme] = useState<ResumeTheme>({
@@ -36,30 +38,23 @@ export default function HomePage() {
     showBorders: true
   });
 
-  // Load LLM configuration from localStorage if present & auto-migrate deprecated models
+  // Load LLM configuration from localStorage if present
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      const storedConfig = localStorage.getItem('resume_llm_config');
+      const storedConfig = localStorage.getItem(STORAGE_KEYS.LLM_CONFIG);
       if (storedConfig) {
         try {
-          const parsed = JSON.parse(storedConfig);
-          // Auto-migrate retired gemini models to gemini-3.8-flash
-          const m = (parsed.model || '').toLowerCase();
-          if (m.includes('2.5-flash') || m.includes('1.0-') || m === 'gemini-pro' || m === 'gemini-pro-vision') {
-            parsed.model = 'gemini-3.8-flash';
-            localStorage.setItem('resume_llm_config', JSON.stringify(parsed));
-          }
+          const parsed = JSON.parse(storedConfig) as LLMConfig;
           setLlmConfig(parsed);
-        } catch (e) {
-          console.error(e);
+        } catch (e: unknown) {
+          console.error('Failed to parse stored LLM configuration:', e);
         }
       } else {
-        const legacyKey = localStorage.getItem('gemini_api_key');
+        const legacyKey = localStorage.getItem(STORAGE_KEYS.LEGACY_GEMINI_KEY);
         if (legacyKey) {
           setLlmConfig({
             provider: 'gemini',
-            apiKey: legacyKey,
-            model: 'gemini-3.8-flash'
+            apiKey: legacyKey
           });
         }
       }
@@ -69,7 +64,7 @@ export default function HomePage() {
   const handleSaveConfig = (newConfig: LLMConfig) => {
     setLlmConfig(newConfig);
     if (typeof window !== 'undefined') {
-      localStorage.setItem('resume_llm_config', JSON.stringify(newConfig));
+      localStorage.setItem(STORAGE_KEYS.LLM_CONFIG, JSON.stringify(newConfig));
     }
   };
 
@@ -91,9 +86,9 @@ export default function HomePage() {
     setAtsScore(newScore);
   };
 
-  const activeProviderPreset = PROVIDER_PRESETS[llmConfig.provider || 'gemini'];
-  const providerLabel = activeProviderPreset
-    ? `${activeProviderPreset.label.split(' ')[0]}`
+  const activeProviderMeta = PROVIDER_METADATA[llmConfig.provider || 'gemini'];
+  const providerLabel = activeProviderMeta
+    ? `${activeProviderMeta.label.split(' ')[0]}`
     : 'AI';
 
   return (

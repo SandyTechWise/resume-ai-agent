@@ -3,10 +3,32 @@ import { optimizeResumeWithAI, extractResumeWithAI } from '@/lib/gemini';
 import { renderStandaloneResumeHtml } from '@/lib/htmlResumeRenderer';
 import { LLMConfig, LLMProvider } from '@/types/llm';
 import { ResumeData, TemplateType, AccentColor } from '@/types/resume';
+import { HTTP_STATUS } from '@/constants/api';
+import { validateApiBaseUrl } from '@/lib/security/urlValidator';
+import { ValidationError, handleApiError } from '@/lib/errors/AppError';
 
-export async function POST(req: NextRequest) {
+interface TailorRequestBody {
+  resume?: ResumeData;
+  rawResumeText?: string;
+  jobPosting: string;
+  targetRole?: string;
+  llmConfig?: LLMConfig;
+  options?: {
+    template?: TemplateType;
+    accentColor?: AccentColor;
+    includeHtml?: boolean;
+  };
+}
+
+export async function POST(req: NextRequest): Promise<NextResponse> {
   try {
-    const body = await req.json();
+    let body: TailorRequestBody;
+    try {
+      body = await req.json();
+    } catch {
+      throw new ValidationError('Malformed JSON payload.');
+    }
+
     const {
       resume,
       rawResumeText,
@@ -14,30 +36,25 @@ export async function POST(req: NextRequest) {
       targetRole,
       llmConfig: bodyLlmConfig,
       options = {}
-    } = body as {
-      resume?: ResumeData;
-      rawResumeText?: string;
-      jobPosting: string;
-      targetRole?: string;
-      llmConfig?: LLMConfig;
-      options?: {
-        template?: TemplateType;
-        accentColor?: AccentColor;
-        includeHtml?: boolean;
-      };
-    };
+    } = body;
 
-    // 1. Resolve LLM configuration from headers or body
+    // 1. Resolve LLM configuration from secure headers or body
     const headerProvider = req.headers.get('x-llm-provider') as LLMProvider | null;
     const headerApiKey = req.headers.get('x-api-key') || req.headers.get('authorization')?.replace(/^Bearer\s+/i, '');
     const headerModel = req.headers.get('x-llm-model');
     const headerBaseUrl = req.headers.get('x-llm-base-url');
 
+    const rawBaseUrl = headerBaseUrl || bodyLlmConfig?.baseUrl;
+    const urlValidation = validateApiBaseUrl(rawBaseUrl || undefined);
+    if (!urlValidation.isValid) {
+      throw new ValidationError(urlValidation.error || 'Invalid API base URL.');
+    }
+
     const activeConfig: LLMConfig = {
       provider: headerProvider || bodyLlmConfig?.provider || 'gemini',
       apiKey: headerApiKey || bodyLlmConfig?.apiKey || process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY || '',
       model: headerModel || bodyLlmConfig?.model,
-      baseUrl: headerBaseUrl || bodyLlmConfig?.baseUrl
+      baseUrl: urlValidation.sanitizedUrl
     };
 
     // 2. Obtain base resume data
@@ -47,33 +64,13 @@ export async function POST(req: NextRequest) {
     } else if (rawResumeText && rawResumeText.trim().length > 20) {
       baseResume = await extractResumeWithAI(rawResumeText, activeConfig);
     } else {
-      return NextResponse.json(
-        {
-          error: 'Either structured "resume" object or "rawResumeText" string must be provided.',
-          usage: {
-            endpoint: 'POST /api/agent/tailor',
-            headers: {
-              'x-llm-provider': 'gemini | openai | anthropic | nvidia | groq | custom',
-              'x-api-key': 'your-api-key',
-              'x-llm-model': 'optional model name'
-            },
-            body: {
-              resume: '{ basics: ..., experience: ... }',
-              jobPosting: 'Target job description text',
-              targetRole: 'Target role title',
-              options: { includeHtml: true, template: 'modern' }
-            }
-          }
-        },
-        { status: 400 }
+      throw new ValidationError(
+        'Either a structured "resume" object or "rawResumeText" string must be provided.'
       );
     }
 
     if (!jobPosting || jobPosting.trim().length < 10) {
-      return NextResponse.json(
-        { error: 'A valid "jobPosting" string is required for tailoring.' },
-        { status: 400 }
-      );
+      throw new ValidationError('A valid "jobPosting" string is required for tailoring.');
     }
 
     // 3. Optimize resume for target job
@@ -98,7 +95,7 @@ export async function POST(req: NextRequest) {
       success: true,
       agentMetadata: {
         providerUsed: activeConfig.provider,
-        modelUsed: activeConfig.model || 'default',
+        modelUsed: activeConfig.model || 'dynamic',
         timestamp: new Date().toISOString()
       },
       atsScore: atsAnalysis.overallScore,
@@ -109,15 +106,8 @@ export async function POST(req: NextRequest) {
       bulletAudits: atsAnalysis.bulletImpacts,
       optimizedResume,
       htmlResume
-    });
-  } catch (error: any) {
-    console.error('Sub-Agent API Error:', error);
-    return NextResponse.json(
-      {
-        error: error?.message || 'Failed to tailor resume for sub-agent.',
-        status: 'error'
-      },
-      { status: 500 }
-    );
+    }, { status: HTTP_STATUS.OK });
+  } catch (error: unknown) {
+    return handleApiError(error, 'Failed to tailor resume for sub-agent.');
   }
 }

@@ -16,8 +16,8 @@ export const ModernTemplate: React.FC<TemplateProps> = ({ data, theme }) => {
       className="resume-sheet modern-template"
       style={{
         fontFamily: theme.fontFamily === 'serif' ? 'Georgia, Cambria, serif' : 'var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-        ['--theme-accent' as any]: theme.accentColor,
-      }}
+        ['--theme-accent' as string]: theme.accentColor,
+      } as React.CSSProperties}
     >
       {/* Header */}
       <header className="resume-header">

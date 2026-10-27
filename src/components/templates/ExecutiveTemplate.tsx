@@ -14,8 +14,8 @@ export const ExecutiveTemplate: React.FC<TemplateProps> = ({ data, theme }) => {
       className="resume-sheet executive-template"
       style={{
         fontFamily: 'Georgia, Cambria, "Times New Roman", Times, serif',
-        ['--theme-accent' as any]: theme.accentColor,
-      }}
+        ['--theme-accent' as string]: theme.accentColor,
+      } as React.CSSProperties}
     >
       {/* Centered Executive Header */}
       <header className="exec-header">

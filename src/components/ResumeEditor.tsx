@@ -72,7 +72,7 @@ export const ResumeEditor: React.FC<ResumeEditorProps> = ({ data, onChange, apiK
     });
   };
 
-  const updateExp = (index: number, field: keyof ExperienceItem, value: any) => {
+  const updateExp = <K extends keyof ExperienceItem>(index: number, field: K, value: ExperienceItem[K]) => {
     const updated = [...data.experience];
     updated[index] = { ...updated[index], [field]: value };
     onChange({ ...data, experience: updated });
@@ -104,7 +104,7 @@ export const ResumeEditor: React.FC<ResumeEditorProps> = ({ data, onChange, apiK
   };
 
   // Skills Helpers
-  const updateSkillsCategory = (catIndex: number, field: keyof SkillCategory, value: any) => {
+  const updateSkillsCategory = <K extends keyof SkillCategory>(catIndex: number, field: K, value: SkillCategory[K]) => {
     const updated = [...data.skills];
     updated[catIndex] = { ...updated[catIndex], [field]: value };
     onChange({ ...data, skills: updated });

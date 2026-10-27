@@ -15,8 +15,8 @@ export const TechTemplate: React.FC<TemplateProps> = ({ data, theme }) => {
     <div
       className="resume-sheet tech-template"
       style={{
-        ['--theme-accent' as any]: theme.accentColor,
-      }}
+        ['--theme-accent' as string]: theme.accentColor,
+      } as React.CSSProperties}
     >
       {/* Tech Header */}
       <header className="tech-header">

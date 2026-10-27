@@ -43,16 +43,17 @@ export const UploadZone: React.FC<UploadZoneProps> = ({
         body: formData,
       });
 
-      const json = await res.json();
+      const json = await res.json() as { success?: boolean; error?: string; resume: ResumeData; atsAnalysis: AtsScoreDetails };
 
       if (!res.ok || !json.success) {
         throw new Error(json.error || 'Failed to process document');
       }
 
       onDataLoaded(json.resume, json.atsAnalysis, file.name);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error(err);
-      setUploadError(err.message || 'Error parsing document.');
+      const msg = err instanceof Error ? err.message : 'Error parsing document.';
+      setUploadError(msg);
     } finally {
       setIsProcessing(false);
     }

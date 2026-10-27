@@ -88,16 +88,17 @@ export const PromptStudio: React.FC<PromptStudioProps> = ({
         })
       });
 
-      const data = await res.json();
+      const data = await res.json() as { success?: boolean; error?: string; summaryOfChanges?: string; resume: ResumeData; atsAnalysis: AtsScoreDetails };
       if (!res.ok || !data.success) {
         throw new Error(data.error || 'Failed to compose resume with AI prompt engine.');
       }
 
-      setCompositionSummary(data.summaryOfChanges);
+      setCompositionSummary(data.summaryOfChanges || null);
       onApplyResume(data.resume, data.atsAnalysis);
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(e);
-      setErrorMsg(e.message || 'Composition failed. Please verify API key.');
+      const msg = e instanceof Error ? e.message : 'Composition failed. Please verify API key.';
+      setErrorMsg(msg);
     } finally {
       setIsComposing(false);
     }

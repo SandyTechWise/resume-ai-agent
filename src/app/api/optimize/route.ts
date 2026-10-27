@@ -1,33 +1,48 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { optimizeResumeWithGemini } from '@/lib/gemini';
+import { optimizeResumeWithAI } from '@/lib/gemini';
 import { ResumeData } from '@/types/resume';
+import { LLMConfig, LLMProvider } from '@/types/llm';
+import { HTTP_STATUS } from '@/constants/api';
+import { validateApiBaseUrl } from '@/lib/security/urlValidator';
+import { ValidationError, handleApiError } from '@/lib/errors/AppError';
 
-export async function POST(req: NextRequest) {
+interface OptimizeRequestBody {
+  resume: ResumeData;
+  jobDescription?: string;
+  targetRole?: string;
+  apiKey?: string;
+  llmConfig?: LLMConfig;
+}
+
+export async function POST(req: NextRequest): Promise<NextResponse> {
   try {
-    const body = await req.json();
-    const { resume, jobDescription, targetRole, apiKey, llmConfig } = body as {
-      resume: ResumeData;
-      jobDescription?: string;
-      targetRole?: string;
-      apiKey?: string;
-      llmConfig?: any;
-    };
-
-    if (!resume || !resume.basics) {
-      return NextResponse.json(
-        { error: 'Valid resume data is required.' },
-        { status: 400 }
-      );
+    let body: OptimizeRequestBody;
+    try {
+      body = await req.json();
+    } catch {
+      throw new ValidationError('Malformed JSON payload.');
     }
 
-    const activeConfig = llmConfig || {
-      apiKey: apiKey || req.headers.get('x-api-key') || req.headers.get('x-gemini-key') || undefined,
-      provider: req.headers.get('x-llm-provider') || 'gemini',
+    const { resume, jobDescription, targetRole, apiKey, llmConfig } = body;
+
+    if (!resume || !resume.basics) {
+      throw new ValidationError('Valid resume data is required for ATS optimization.');
+    }
+
+    const rawBaseUrl = req.headers.get('x-llm-base-url') || llmConfig?.baseUrl;
+    const urlValidation = validateApiBaseUrl(rawBaseUrl || undefined);
+    if (!urlValidation.isValid) {
+      throw new ValidationError(urlValidation.error || 'Invalid API base URL.');
+    }
+
+    const activeConfig: LLMConfig = llmConfig || {
+      apiKey: apiKey || req.headers.get('x-api-key') || req.headers.get('x-gemini-key') || '',
+      provider: (req.headers.get('x-llm-provider') as LLMProvider) || 'gemini',
       model: req.headers.get('x-llm-model') || undefined,
-      baseUrl: req.headers.get('x-llm-base-url') || undefined
+      baseUrl: urlValidation.sanitizedUrl
     };
 
-    const result = await optimizeResumeWithGemini(
+    const result = await optimizeResumeWithAI(
       resume,
       jobDescription,
       targetRole,
@@ -38,12 +53,8 @@ export async function POST(req: NextRequest) {
       success: true,
       optimizedResume: result.optimizedResume,
       atsAnalysis: result.atsAnalysis
-    });
-  } catch (error: any) {
-    console.error('API /api/optimize error:', error);
-    return NextResponse.json(
-      { error: error?.message || 'Failed to optimize resume.' },
-      { status: 500 }
-    );
+    }, { status: HTTP_STATUS.OK });
+  } catch (error: unknown) {
+    return handleApiError(error, 'Failed to optimize resume.');
   }
 }

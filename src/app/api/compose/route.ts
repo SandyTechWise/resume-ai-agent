@@ -2,10 +2,24 @@ import { NextRequest, NextResponse } from 'next/server';
 import { composeResumeWithAI } from '@/lib/gemini';
 import { ComposeResumePayload } from '@/types/resume';
 import { LLMConfig, LLMProvider } from '@/types/llm';
+import { HTTP_STATUS } from '@/constants/api';
+import { SECURITY_CONFIG } from '@/constants/security';
+import { validateApiBaseUrl } from '@/lib/security/urlValidator';
+import { ValidationError, handleApiError } from '@/lib/errors/AppError';
 
-export async function POST(req: NextRequest) {
+interface ComposeRequestBody extends ComposeResumePayload {
+  llmConfig?: LLMConfig;
+}
+
+export async function POST(req: NextRequest): Promise<NextResponse> {
   try {
-    const body = await req.json();
+    let body: ComposeRequestBody;
+    try {
+      body = await req.json();
+    } catch {
+      throw new ValidationError('Malformed JSON payload.');
+    }
+
     const {
       mode = 'scratch',
       userInput = '',
@@ -15,26 +29,33 @@ export async function POST(req: NextRequest) {
       targetRole,
       targetJobDescription,
       llmConfig: bodyLlmConfig
-    } = body as ComposeResumePayload & { llmConfig?: LLMConfig };
+    } = body;
 
     if (!userInput && !baseResume && !instructions) {
-      return NextResponse.json(
-        { error: 'At least one of "userInput", "baseResume", or "instructions" must be provided.' },
-        { status: 400 }
-      );
+      throw new ValidationError('At least one of "userInput", "baseResume", or "instructions" must be provided.');
     }
 
-    // Resolve LLM config from body or headers
+    if (userInput.length > SECURITY_CONFIG.MAX_PROMPT_INPUT_LENGTH) {
+      throw new ValidationError(`Input exceeds maximum length of ${SECURITY_CONFIG.MAX_PROMPT_INPUT_LENGTH} characters.`);
+    }
+
+    // Resolve LLM config from body or secure headers
     const headerProvider = req.headers.get('x-llm-provider') as LLMProvider | null;
     const headerApiKey = req.headers.get('x-api-key') || req.headers.get('authorization')?.replace(/^Bearer\s+/i, '');
     const headerModel = req.headers.get('x-llm-model');
     const headerBaseUrl = req.headers.get('x-llm-base-url');
 
+    const rawBaseUrl = headerBaseUrl || bodyLlmConfig?.baseUrl;
+    const urlValidation = validateApiBaseUrl(rawBaseUrl);
+    if (!urlValidation.isValid) {
+      throw new ValidationError(urlValidation.error || 'Invalid API base URL.');
+    }
+
     const activeConfig: LLMConfig = {
       provider: headerProvider || bodyLlmConfig?.provider || 'gemini',
       apiKey: headerApiKey || bodyLlmConfig?.apiKey || process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY || '',
       model: headerModel || bodyLlmConfig?.model,
-      baseUrl: headerBaseUrl || bodyLlmConfig?.baseUrl
+      baseUrl: urlValidation.sanitizedUrl
     };
 
     const payload: ComposeResumePayload = {
@@ -55,12 +76,8 @@ export async function POST(req: NextRequest) {
       resume: result.resume,
       atsAnalysis: result.atsAnalysis,
       summaryOfChanges: result.summaryOfChanges
-    });
-  } catch (error: any) {
-    console.error('API /api/compose error:', error);
-    return NextResponse.json(
-      { error: error?.message || 'Failed to compose resume with AI prompt engine.' },
-      { status: 500 }
-    );
+    }, { status: HTTP_STATUS.OK });
+  } catch (error: unknown) {
+    return handleApiError(error, 'Failed to compose resume with AI prompt engine.');
   }
 }

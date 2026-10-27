@@ -3,6 +3,9 @@ import { AtsScoreDetails, ResumeData } from '@/types/resume';
 import { LLMConfig } from '@/types/llm';
 import { CheckCircle, AlertTriangle, Sparkles, Target, Zap, ChevronDown, ChevronUp, Layers, Check } from 'lucide-react';
 
+import { ATS_THRESHOLDS } from '@/constants/ats';
+import { API_ROUTES } from '@/constants/api';
+
 interface AtsScoreCardProps {
   scoreDetails: AtsScoreDetails;
   resumeData: ResumeData;
@@ -24,15 +27,15 @@ export const AtsScoreCard: React.FC<AtsScoreCardProps> = ({
   const [showBulletDiffs, setShowBulletDiffs] = useState<boolean>(true);
 
   const getScoreColor = (score: number) => {
-    if (score >= 80) return '#10b981'; // Green
-    if (score >= 60) return '#f59e0b'; // Amber
+    if (score >= ATS_THRESHOLDS.STRONG) return '#10b981'; // Green
+    if (score >= ATS_THRESHOLDS.MODERATE) return '#f59e0b'; // Amber
     return '#ef4444'; // Red
   };
 
   const handleOptimize = async () => {
     setIsOptimizing(true);
     try {
-      const res = await fetch('/api/optimize', {
+      const res = await fetch(API_ROUTES.OPTIMIZE, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

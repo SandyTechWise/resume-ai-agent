@@ -41,22 +41,31 @@
 │   │   ├── ResumeEditor.tsx            # Granular card-based editor (Contact, Summary, Bullets, Skills)
 │   │   ├── ResumeViewer.tsx            # Print-calibrated paper viewport with zoom & print controls
 │   │   └── UploadZone.tsx              # Drag-and-drop ingestion (.pdf/.docx) + Sample loader
+│   ├── constants/                  # Centralized constants (NO magic values or hardcoded models)
+│   │   ├── index.ts                # Central barrel export
+│   │   ├── api.ts                  # Standard HTTP_STATUS, API_ROUTES, UPLOAD_LIMITS, API_TIMEOUTS
+│   │   ├── ats.ts                  # ATS_SCORING_WEIGHTS, ATS_THRESHOLDS, ACTION_VERBS, BASELINE_TECH_KEYWORDS
+│   │   ├── llm.ts                  # PROVIDER_METADATA, NON_CHAT_MODEL_PATTERNS, PROVIDER_STANDARD_HEADERS
+│   │   ├── security.ts             # SECURITY_CONFIG, SSRF_ALLOWED_PROTOCOLS, BLOCKED_HOSTS
+│   │   └── storage.ts              # STORAGE_KEYS (Local/session storage keys)
 │   ├── data/
-│   │   └── sampleResume.ts             # Default high-impact resume profile for instant testing
+│   │   └── sampleResume.ts         # Default high-impact resume profile for instant testing
 │   ├── lib/
-│   │   ├── documentParser.ts           # PDFParse v2 & Mammoth extractors + local heuristic regex fallback
-│   │   ├── gemini.ts                   # Core AI extraction, bullet rewriting & local ATS scorer
-│   │   ├── htmlResumeRenderer.ts       # Standalone HTML resume generator for sub-agent responses
+│   │   ├── documentParser.ts       # PDFParse v2 & Mammoth extractors + local heuristic regex fallback
+│   │   ├── gemini.ts               # Core AI extraction, bullet rewriting & local ATS scorer
+│   │   ├── htmlResumeRenderer.ts   # Standalone HTML resume generator for sub-agent responses
+│   │   ├── errors/AppError.ts      # Strongly typed error hierarchy & handleApiError global handler
+│   │   ├── security/urlValidator.ts # SSRF protection & base URL validator for provider endpoints
 │   │   └── llm/
-│   │       └── client.ts               # Universal LLM caller (Gemini, Claude, OpenAI/NVIDIA/Groq/Ollama)
+│   │       └── client.ts           # Universal dynamic LLM caller (Gemini, Claude, OpenAI/NVIDIA/Groq/Ollama)
 │   └── types/
-│       ├── llm.ts                      # Multi-provider LLM types & provider presets
-│       └── resume.ts                   # Strongly typed ResumeData, AtsScoreDetails, Theme contracts
+│       ├── llm.ts                  # Multi-provider LLM types & dynamic DiscoveredModel contracts
+│       └── resume.ts               # Strongly typed ResumeData, AtsScoreDetails, Theme contracts
 ├── examples/
-│   └── auto_applier_subagent.py        # Python example invoking ResumeAgent as a sub-agent
-├── docs/                               # Developer & agent documentation directory
-├── .env.example                        # Example environment variables
-└── README.md                           # Human-facing project overview
+│   └── auto_applier_subagent.py    # Python example invoking ResumeAgent as a sub-agent
+├── docs/                           # Developer & agent documentation directory
+├── .env.example                    # Example environment variables (secrets strictly in .env.local)
+└── README.md                       # Human-facing project overview
 ```
 
 ---
@@ -161,9 +170,15 @@ npm run build
 4. **Universal LLM Caller (`src/lib/llm/client.ts`)**:
    - OpenAI, NVIDIA NIM, Groq, OpenRouter, and Ollama all use the standard OpenAI-compatible `/chat/completions` endpoint with `baseUrl` and `apiKey`.
    - Anthropic Claude uses `https://api.anthropic.com/v1/messages`.
-   - Gemini uses `@google/genai` with `gemini-3.8-flash` as primary flagship and `gemini-1.5-flash` as stable fallback.
-5. **Model Deprecation & Directory Filtering (`/api/models`, `src/lib/llm/client.ts`)**:
-   - Provider endpoints (such as Google's `/v1beta/models`) list all historical entries, including retired models like `gemini-2.5-flash` or `gemini-1.0-pro`. Calling them results in 404 NOT_FOUND ("This model is no longer available to new users...").
-   - `/api/models` applies active filtering, tags deprecated models, and prioritizes verified flagships (`gemini-3.8-flash`, `gemini-1.5-flash`).
-   - `src/lib/llm/client.ts` automatically normalizes legacy model names to `gemini-3.8-flash` before invoking the API and includes self-healing fallbacks.
-   - `ApiKeyModal.tsx` provides an "Active Only" toggle, search filter, deprecation warning banner, and 1-click model verification.
+   - Gemini uses `@google/genai`.
+5. **Dynamic Model Population (Zero Hardcoded Models)**:
+   - Models are NOT hardcoded in source arrays or presets. They are dynamically populated directly from provider accounts via `POST /api/models`.
+   - Non-chat capabilities (audio, embeddings, moderation) are filtered dynamically via `NON_CHAT_MODEL_PATTERNS`.
+6. **Security Architecture & SSRF Protection (`src/lib/security/urlValidator.ts`)**:
+   - All provider `baseUrl` parameters are strictly validated prior to dispatch.
+   - Enforces HTTPS (permitting HTTP only for loopback `localhost`/`127.0.0.1` during local dev).
+   - Blocks cloud metadata IP addresses (`169.254.169.254`, `metadata.google.internal`).
+7. **Strict Typing Standards**:
+   - Zero `any` policy across the entire codebase. All errors, payloads, and handlers are strongly typed.
+   - Centralized constants in `src/constants/` manage all weights, keys, and routes.
+   - Secrets are isolated in `.env.local` and never committed or transmitted to the client.
