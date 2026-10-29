@@ -272,3 +272,4 @@ export function sanitizeResumeData(raw: unknown): ResumeData {
     customSections: customSections.length > 0 ? customSections : undefined
   };
 }
+

@@ -978,7 +978,30 @@ export const LivePromptWorkspace: React.FC<LivePromptWorkspaceProps> = ({
               </button>
             </div>
             {promptError && (
-              <p style={{ color: '#dc2626', fontSize: '12px', margin: '4px 0 0 0' }}>{promptError}</p>
+              <div style={{ backgroundColor: '#fef2f2', border: '1px solid #fecaca', borderRadius: '6px', padding: '8px 10px', marginTop: '6px' }}>
+                <p style={{ color: '#b91c1c', fontSize: '12px', margin: 0, fontWeight: 500 }}>{promptError}</p>
+                {promptError.toLowerCase().includes('high demand') && (
+                  <button
+                    type="button"
+                    onClick={onOpenKeyModal}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: '#2563eb',
+                      textDecoration: 'underline',
+                      fontSize: '11.5px',
+                      cursor: 'pointer',
+                      padding: 0,
+                      marginTop: '4px',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '4px'
+                    }}
+                  >
+                    <span>Switch to Gemini 2.5 Flash in AI Settings ↗</span>
+                  </button>
+                )}
+              </div>
             )}
           </div>
 

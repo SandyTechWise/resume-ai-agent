@@ -93,10 +93,18 @@ const ApiKeyModalDialog: React.FC<ModalDialogContentProps> = ({
       if (res.ok && data.success && Array.isArray(data.models) && data.models.length > 0) {
         setLiveModels(data.models);
         
-        // Auto-select first active model if no model currently set or current model not found
+        // Auto-select recommended model if no model currently set or current model is an overloaded legacy model
         const currentModelExists = data.models.some((m: DiscoveredModel) => m.id === model);
-        if (!currentModelExists && data.models[0]?.id) {
-          setModel(data.models[0].id);
+        const isCurrentOverloaded = model === 'gemini-1.0-pro' || model.includes('1.0-pro');
+        if (!currentModelExists || isCurrentOverloaded || !model) {
+          const recommended = 
+            data.models.find(m => m.id === 'gemini-2.5-flash') ||
+            data.models.find(m => m.id === 'gemini-2.0-flash') ||
+            data.models.find(m => m.id.includes('flash')) ||
+            data.models[0];
+          if (recommended?.id) {
+            setModel(recommended.id);
+          }
         }
       } else {
         setModelsFetchError(data.error || 'Failed to fetch live models from provider.');
@@ -370,6 +378,15 @@ const ApiKeyModalDialog: React.FC<ModalDialogContentProps> = ({
                 {isCustomModel ? 'Pick from Retrieved List' : 'Enter Custom Model Identifier'}
               </button>
             </div>
+
+            {provider === 'gemini' && (
+              <div style={{ margin: '6px 0 10px 0', padding: '6px 10px', backgroundColor: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '6px', fontSize: '11px', color: '#166534', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <Sparkles size={12} className="text-emerald-600 flex-shrink-0" />
+                <span>
+                  Tip: If you encounter &quot;High Demand&quot; on Gemini, select <strong>Gemini 2.5 Flash</strong> or <strong>2.0 Flash</strong> for instant, high-capacity generation without server throttling.
+                </span>
+              </div>
+            )}
 
             {/* Quick Filter & Active Toggle Bar */}
             {!isCustomModel && liveModels.length > 0 && (

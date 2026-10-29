@@ -103,3 +103,50 @@ export const LLM_GENERATION_DEFAULTS = {
   TEMPERATURE: 0.2,
   MAX_OUTPUT_TOKENS: 4096
 } as const;
+
+/**
+ * High-throughput production default models per provider.
+ * Automatically selected if the user has not explicitly chosen a model identifier.
+ */
+export const PROVIDER_DEFAULT_MODELS: Record<LLMProvider, string> = {
+  gemini: 'gemini-2.5-flash',
+  openai: 'gpt-4o-mini',
+  anthropic: 'claude-3-5-haiku-20241022',
+  groq: 'llama-3.3-70b-versatile',
+  nvidia: 'meta/llama-3.1-70b-instruct',
+  openrouter: 'meta-llama/llama-3.3-70b-instruct',
+  custom: 'llama3'
+} as const;
+
+/**
+ * High-capacity fallback models for Google Gemini when the primary model experiences high demand (503 / 429).
+ * Ordered from newest high-capability fast model down through high-throughput lite models.
+ */
+export const GEMINI_HIGH_CAPACITY_FALLBACKS: readonly string[] = [
+  'gemini-2.5-flash',
+  'gemini-2.0-flash',
+  'gemini-1.5-flash',
+  'gemini-2.0-flash-lite'
+] as const;
+
+/**
+ * Checks whether an error message from a provider indicates a temporary capacity spike or model overload.
+ */
+export function isOverloadOrDemandSpikeError(errorStr: string): boolean {
+  if (!errorStr) return false;
+  const lower = errorStr.toLowerCase();
+  return (
+    lower.includes('high demand') ||
+    lower.includes('overloaded') ||
+    lower.includes('spikes in demand') ||
+    lower.includes('resource_exhausted') ||
+    lower.includes('resource has been exhausted') ||
+    lower.includes('503') ||
+    lower.includes('429') ||
+    lower.includes('temporarily unavailable') ||
+    lower.includes('unavailable') ||
+    lower.includes('quota exceeded') ||
+    lower.includes('rate limit') ||
+    lower.includes('try again later')
+  );
+}

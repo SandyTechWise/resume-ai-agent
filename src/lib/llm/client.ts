@@ -3,6 +3,9 @@ import {
   PROVIDER_METADATA, 
   PROVIDER_STANDARD_HEADERS, 
   LLM_GENERATION_DEFAULTS,
+  PROVIDER_DEFAULT_MODELS,
+  GEMINI_HIGH_CAPACITY_FALLBACKS,
+  isOverloadOrDemandSpikeError,
   ProviderMetadata
 } from '@/constants/llm';
 
@@ -44,7 +47,8 @@ export async function generateTextWithLLM({
   const provider: LLMProvider = config.provider || 'gemini';
   const meta = PROVIDER_METADATA[provider];
   const apiKey = config.apiKey?.trim();
-  const model = config.model?.trim();
+  const rawModel = config.model?.trim();
+  const model = rawModel || PROVIDER_DEFAULT_MODELS[provider] || 'gemini-2.5-flash';
 
   if (!apiKey) {
     throw new AuthenticationError(`API Key is missing for provider: ${meta?.label || provider}`);
@@ -86,27 +90,69 @@ async function generateGeminiContent(
     ? `${systemPrompt}\n\nUSER REQUEST:\n${userPrompt}`
     : userPrompt;
 
-  try {
-    const res = await ai.models.generateContent({
-      model,
-      contents: fullPrompt,
-      config: jsonMode ? { responseMimeType: 'application/json' } : undefined
-    });
-
-    return cleanJsonResponse(res.text || '');
-  } catch (err: unknown) {
-    const errorMessage = extractErrorMessage(err);
-    if (jsonMode && errorMessage.toLowerCase().includes('json mode is not enabled')) {
-      try {
+  const executeCall = async (targetModel: string): Promise<string> => {
+    try {
+      const res = await ai.models.generateContent({
+        model: targetModel,
+        contents: fullPrompt,
+        config: jsonMode ? { responseMimeType: 'application/json' } : undefined
+      });
+      return cleanJsonResponse(res.text || '');
+    } catch (err: unknown) {
+      const errorMessage = extractErrorMessage(err);
+      if (jsonMode && errorMessage.toLowerCase().includes('json mode is not enabled')) {
         const fallbackRes = await ai.models.generateContent({
-          model,
+          model: targetModel,
           contents: `${fullPrompt}\n\nIMPORTANT: Return ONLY valid JSON matching the requested schema. No conversational text.`
         });
         return cleanJsonResponse(fallbackRes.text || '');
-      } catch (retryErr: unknown) {
-        throw new ProviderApiError('Google Gemini', extractErrorMessage(retryErr));
       }
+      throw err;
     }
+  };
+
+  try {
+    return await executeCall(model);
+  } catch (err: unknown) {
+    const errorMessage = extractErrorMessage(err);
+
+    // Automatic resilience against Google Gemini temporary capacity / demand spikes
+    if (isOverloadOrDemandSpikeError(errorMessage)) {
+      console.warn(`[Google Gemini] Model "${model}" experienced a capacity spike: "${errorMessage}". Initiating resilience strategy...`);
+
+      // Strategy 1: Transient spike retry with backoff and jitter (spikes often clear in 1-2s)
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 1200 + Math.random() * 600));
+        return await executeCall(model);
+      } catch (retryErr: unknown) {
+        console.warn(`[Google Gemini] Retry on primary model "${model}" also experienced high demand. Cascading to high-capacity Flash models...`);
+      }
+
+      // Strategy 2: Automatic High-Capacity Flash Fallback Cascade
+      const fallbackModels = GEMINI_HIGH_CAPACITY_FALLBACKS.filter(
+        (fm) => fm.toLowerCase() !== model.toLowerCase()
+      );
+
+      for (const fallbackModel of fallbackModels) {
+        try {
+          console.info(`[Google Gemini] Attempting automatic high-capacity fallback to "${fallbackModel}"...`);
+          const fallbackResult = await executeCall(fallbackModel);
+          console.info(`[Google Gemini] Successfully completed request via high-capacity fallback model "${fallbackModel}".`);
+          return fallbackResult;
+        } catch (fallbackErr: unknown) {
+          const fbMsg = extractErrorMessage(fallbackErr);
+          console.warn(`[Google Gemini] Fallback model "${fallbackModel}" unavailable: ${fbMsg}`);
+        }
+      }
+
+      throw new ProviderApiError(
+        'Google Gemini',
+        `Google Gemini is currently experiencing high demand on model "${model}". ` +
+        `We attempted automatic recovery using high-capacity Flash models (${fallbackModels.join(', ')}), but Google servers remain temporarily saturated. ` +
+        `Please try again in a few moments, or select a Flash model (e.g. Gemini 2.5 Flash) in AI Settings.`
+      );
+    }
+
     throw new ProviderApiError('Google Gemini', errorMessage);
   }
 }

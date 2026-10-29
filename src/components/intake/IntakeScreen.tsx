@@ -697,6 +697,26 @@ export const IntakeScreen: React.FC<IntakeScreenProps> = ({
           <div>
             <strong>{scannedPdfWarning ? 'Scanned Document Notice' : 'Attention'}: </strong>
             <span>{errorMessage}</span>
+            {errorMessage.toLowerCase().includes('high demand') && (
+              <div style={{ marginTop: '6px' }}>
+                <button
+                  type="button"
+                  onClick={onOpenKeyModal}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: '#2563eb',
+                    textDecoration: 'underline',
+                    fontSize: '12px',
+                    cursor: 'pointer',
+                    padding: 0,
+                    fontWeight: 600
+                  }}
+                >
+                  Open AI Settings to switch to Gemini 2.5 Flash ↗
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}

@@ -133,9 +133,21 @@ async function fetchGeminiModels(apiKey: string): Promise<DiscoveredModel[]> {
     })
     .map((m: GeminiRawModel): DiscoveredModel => {
       const cleanId = m.name.replace(/^models\//, '');
+      const isTopRecommended = cleanId === 'gemini-2.5-flash';
+      const isHighCapacity = cleanId === 'gemini-2.0-flash' || cleanId === 'gemini-1.5-flash';
+      
+      let label = `${m.displayName || cleanId} (${cleanId})`;
+      if (isTopRecommended) {
+        label = `⭐ ${cleanId} — Recommended (Fast, High-Capacity)`;
+      } else if (isHighCapacity) {
+        label = `⚡ ${cleanId} — High-Capacity (Stable)`;
+      } else if (cleanId.includes('pro')) {
+        label = `🧠 ${cleanId} (Deep Reasoning — may experience high demand on free tier)`;
+      }
+
       return {
         id: cleanId,
-        label: `${m.displayName || cleanId} (${cleanId})`,
+        label,
         displayName: m.displayName || cleanId,
         description: m.description,
         status: 'active',
@@ -143,7 +155,29 @@ async function fetchGeminiModels(apiKey: string): Promise<DiscoveredModel[]> {
       };
     });
 
-  discovered.sort((a, b) => a.id.localeCompare(b.id));
+  // Intelligent ranking: Put high-capacity, recommended flash models at the top
+  const getRank = (id: string): number => {
+    const l = id.toLowerCase();
+    if (l === 'gemini-2.5-flash') return 1;
+    if (l === 'gemini-2.0-flash') return 2;
+    if (l === 'gemini-1.5-flash') return 3;
+    if (l === 'gemini-2.0-flash-lite') return 4;
+    if (l === 'gemini-1.5-flash-8b') return 5;
+    if (l === 'gemini-2.5-pro') return 10;
+    if (l === 'gemini-1.5-pro') return 11;
+    if (l.includes('flash')) return 15;
+    if (l.includes('pro')) return 20;
+    if (l.includes('-exp') || l.includes('-preview')) return 50;
+    if (l.includes('1.0')) return 99;
+    return 30;
+  };
+
+  discovered.sort((a, b) => {
+    const rankDiff = getRank(a.id) - getRank(b.id);
+    if (rankDiff !== 0) return rankDiff;
+    return a.id.localeCompare(b.id);
+  });
+
   return discovered;
 }
 
