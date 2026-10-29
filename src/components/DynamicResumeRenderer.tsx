@@ -15,6 +15,7 @@ import {
   Sparkles
 } from 'lucide-react';
 import { LinkedinIcon, GithubIcon } from './icons/BrandIcons';
+import { getSkillsList, getCategoryTitle, toStringArray } from '@/lib/resumeSanitizer';
 
 interface DynamicResumeRendererProps {
   data: ResumeData;
@@ -309,80 +310,84 @@ export const DynamicResumeRenderer: React.FC<DynamicResumeRendererProps> = ({
 
   // Experience Section
   const renderExperienceSection = () => {
-    if (!experience || experience.length === 0) return null;
+    if (!experience || !Array.isArray(experience) || experience.length === 0) return null;
     return (
       <section className="resume-section resume-experience-section" style={{ marginBottom: sectionSpacing }}>
         {renderSectionTitle('Experience', '💼', Briefcase)}
         <div className={isTimeline ? 'resume-timeline-container' : undefined} style={isTimeline ? { borderLeft: `2px solid ${tokens.accentColor}35`, paddingLeft: '16px', marginLeft: '6px' } : undefined}>
-          {experience.map((exp) => (
-            <article 
-              key={exp.id} 
-              className={`resume-experience-item ${isCards ? 'resume-card' : ''}`}
-              style={{
-                marginBottom: isCards ? '12px' : densityPadding,
-                padding: isCards ? '12px 14px' : '0',
-                backgroundColor: isCards ? '#ffffff' : 'transparent',
-                borderRadius: isCards ? '8px' : '0',
-                border: isCards ? `1px solid ${tokens.accentColor}25` : 'none',
-                boxShadow: isCards ? '0 2px 6px rgba(0,0,0,0.03)' : 'none'
-              }}
-            >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '2px' }}>
-                <div>
-                  <span style={{ fontWeight: 700, color: '#0f172a', fontSize: '10.5pt' }}>{exp.position}</span>
-                  <span style={{ color: '#475569', fontWeight: 600 }}> — {exp.company}</span>
-                  {exp.location && <span style={{ color: '#64748b', fontSize: '9pt' }}> ({exp.location})</span>}
+          {experience.map((exp, expIdx) => {
+            const bullets = toStringArray(exp.bullets);
+            const technologies = toStringArray(exp.technologies);
+            return (
+              <article 
+                key={exp.id || expIdx} 
+                className={`resume-experience-item ${isCards ? 'resume-card' : ''}`}
+                style={{
+                  marginBottom: isCards ? '12px' : densityPadding,
+                  padding: isCards ? '12px 14px' : '0',
+                  backgroundColor: isCards ? '#ffffff' : 'transparent',
+                  borderRadius: isCards ? '8px' : '0',
+                  border: isCards ? `1px solid ${tokens.accentColor}25` : 'none',
+                  boxShadow: isCards ? '0 2px 6px rgba(0,0,0,0.03)' : 'none'
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '2px' }}>
+                  <div>
+                    <span style={{ fontWeight: 700, color: '#0f172a', fontSize: '10.5pt' }}>{exp.position}</span>
+                    <span style={{ color: '#475569', fontWeight: 600 }}> — {exp.company}</span>
+                    {exp.location && <span style={{ color: '#64748b', fontSize: '9pt' }}> ({exp.location})</span>}
+                  </div>
+                  <span style={{ fontSize: '8.5pt', fontWeight: 600, color: tokens.accentColor, whiteSpace: 'nowrap' }}>
+                    {exp.startDate} – {exp.current ? 'Present' : exp.endDate}
+                  </span>
                 </div>
-                <span style={{ fontSize: '8.5pt', fontWeight: 600, color: tokens.accentColor, whiteSpace: 'nowrap' }}>
-                  {exp.startDate} – {exp.current ? 'Present' : exp.endDate}
-                </span>
-              </div>
 
-              {exp.bullets && exp.bullets.length > 0 && (
-                <ul style={{ paddingLeft: '18px', margin: '4px 0 6px 0', color: '#334155' }}>
-                  {exp.bullets.map((bullet, idx) => {
-                    const isHighlighted = highlightedDiff?.after?.includes(bullet.slice(0, 30));
-                    return (
-                      <li
+                {bullets.length > 0 && (
+                  <ul style={{ paddingLeft: '18px', margin: '4px 0 6px 0', color: '#334155' }}>
+                    {bullets.map((bullet, idx) => {
+                      const isHighlighted = highlightedDiff?.after?.includes(bullet.slice(0, 30));
+                      return (
+                        <li
+                          key={idx}
+                          style={{
+                            marginBottom: '3px',
+                            backgroundColor: isHighlighted ? '#fef3c7' : 'transparent',
+                            borderRadius: isHighlighted ? '3px' : 0
+                          }}
+                        >
+                          {bullet}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+
+                {technologies.length > 0 && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', fontSize: '8pt', color: '#64748b', marginTop: '3px' }}>
+                    <span style={{ fontWeight: 600, color: tokens.accentColor }}>Competencies:</span>
+                    {technologies.map((t, idx) => (
+                      <span
                         key={idx}
+                        className="skill-pill"
                         style={{
-                          marginBottom: '3px',
-                          backgroundColor: isHighlighted ? '#fef3c7' : 'transparent',
-                          borderRadius: isHighlighted ? '3px' : 0
+                          backgroundColor: isGradientBadges
+                            ? `linear-gradient(135deg, ${tokens.accentColor}18, ${tokens.secondaryColor || tokens.accentColor}25)`
+                            : isPills ? `${tokens.accentColor}15` : '#f1f5f9',
+                          color: isPills ? tokens.accentColor : '#334155',
+                          border: isPills ? `1px solid ${tokens.accentColor}30` : 'none',
+                          padding: '1px 7px',
+                          borderRadius: isPills ? '10px' : '3px',
+                          fontWeight: isPills ? 600 : 400
                         }}
                       >
-                        {bullet}
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-
-              {exp.technologies && exp.technologies.length > 0 && (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', fontSize: '8pt', color: '#64748b', marginTop: '3px' }}>
-                  <span style={{ fontWeight: 600, color: tokens.accentColor }}>Competencies:</span>
-                  {exp.technologies.map((t, idx) => (
-                    <span
-                      key={idx}
-                      className="skill-pill"
-                      style={{
-                        backgroundColor: isGradientBadges
-                          ? `linear-gradient(135deg, ${tokens.accentColor}18, ${tokens.secondaryColor || tokens.accentColor}25)`
-                          : isPills ? `${tokens.accentColor}15` : '#f1f5f9',
-                        color: isPills ? tokens.accentColor : '#334155',
-                        border: isPills ? `1px solid ${tokens.accentColor}30` : 'none',
-                        padding: '1px 7px',
-                        borderRadius: isPills ? '10px' : '3px',
-                        fontWeight: isPills ? 600 : 400
-                      }}
-                    >
-                      {t}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </article>
-          ))}
+                        {t}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </article>
+            );
+          })}
         </div>
       </section>
     );
@@ -390,13 +395,13 @@ export const DynamicResumeRenderer: React.FC<DynamicResumeRendererProps> = ({
 
   // Education Section
   const renderEducationSection = () => {
-    if (!education || education.length === 0) return null;
+    if (!education || !Array.isArray(education) || education.length === 0) return null;
     return (
       <section className="resume-section resume-education-section" style={{ marginBottom: sectionSpacing }}>
         {renderSectionTitle('Education', '🎓', GraduationCap)}
         <div>
-          {education.map((edu) => (
-            <div key={edu.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '4px' }}>
+          {education.map((edu, eduIdx) => (
+            <div key={edu.id || eduIdx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '4px' }}>
               <div>
                 <span style={{ fontWeight: 700, color: '#0f172a' }}>
                   {[edu.degree, edu.fieldOfStudy].filter(Boolean).join(' in ')}
@@ -417,41 +422,47 @@ export const DynamicResumeRenderer: React.FC<DynamicResumeRendererProps> = ({
 
   // Skills Section
   const renderSkillsSection = () => {
-    if (!skills || skills.length === 0) return null;
+    if (!skills || !Array.isArray(skills) || skills.length === 0) return null;
     return (
       <section className="resume-section resume-skills-section" style={{ marginBottom: sectionSpacing }}>
         {renderSectionTitle('Skills & Competencies', useEmojis && (tokens.preset === 'creative' || tokens.preset === 'custom') ? '🎨' : '🛠️', CheckCircle2)}
         <div>
-          {skills.map((cat) => (
-            <div key={cat.id} style={{ marginBottom: isPills ? '8px' : '4px', fontSize: '9pt' }}>
-              <span style={{ fontWeight: 700, color: '#0f172a' }}>{cat.category}: </span>
-              {isPills ? (
-                <div style={{ display: 'inline-flex', flexWrap: 'wrap', gap: '5px', marginTop: '3px' }}>
-                  {cat.skills.map((skill, sIdx) => (
-                    <span
-                      key={sIdx}
-                      className="skill-pill"
-                      style={{
-                        backgroundColor: isGradientBadges
-                          ? `${tokens.accentColor}18`
-                          : `${tokens.accentColor}14`,
-                        color: tokens.accentColor,
-                        border: `1px solid ${tokens.accentColor}35`,
-                        padding: '2px 8px',
-                        borderRadius: '12px',
-                        fontSize: '8.5pt',
-                        fontWeight: 600
-                      }}
-                    >
-                      {skill}
-                    </span>
-                  ))}
-                </div>
-              ) : (
-                <span style={{ color: '#334155' }}>{cat.skills.join(', ')}</span>
-              )}
-            </div>
-          ))}
+          {skills.map((cat, idx) => {
+            const skillList = getSkillsList(cat);
+            if (skillList.length === 0) return null;
+            const categoryTitle = getCategoryTitle(cat, idx);
+
+            return (
+              <div key={(typeof cat === 'object' && cat !== null && 'id' in cat && (cat as { id?: string }).id) || idx} style={{ marginBottom: isPills ? '8px' : '4px', fontSize: '9pt' }}>
+                <span style={{ fontWeight: 700, color: '#0f172a' }}>{categoryTitle}: </span>
+                {isPills ? (
+                  <div style={{ display: 'inline-flex', flexWrap: 'wrap', gap: '5px', marginTop: '3px' }}>
+                    {skillList.map((skill, sIdx) => (
+                      <span
+                        key={sIdx}
+                        className="skill-pill"
+                        style={{
+                          backgroundColor: isGradientBadges
+                            ? `${tokens.accentColor}18`
+                            : `${tokens.accentColor}14`,
+                          color: tokens.accentColor,
+                          border: `1px solid ${tokens.accentColor}35`,
+                          padding: '2px 8px',
+                          borderRadius: '12px',
+                          fontSize: '8.5pt',
+                          fontWeight: 600
+                        }}
+                      >
+                        {skill}
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <span style={{ color: '#334155' }}>{skillList.join(', ')}</span>
+                )}
+              </div>
+            );
+          })}
         </div>
       </section>
     );
@@ -459,46 +470,49 @@ export const DynamicResumeRenderer: React.FC<DynamicResumeRendererProps> = ({
 
   // Projects Section
   const renderProjectsSection = () => {
-    if (!projects || projects.length === 0) return null;
+    if (!projects || !Array.isArray(projects) || projects.length === 0) return null;
     return (
       <section className="resume-section resume-projects-section" style={{ marginBottom: sectionSpacing }}>
         {renderSectionTitle('Key Projects', '🚀', FolderKanban)}
         <div>
-          {projects.map((proj) => (
-            <article 
-              key={proj.id} 
-              className={isCards ? 'resume-card' : undefined}
-              style={{
-                marginBottom: isCards ? '10px' : densityPadding,
-                padding: isCards ? '10px 12px' : '0',
-                backgroundColor: isCards ? '#ffffff' : 'transparent',
-                borderRadius: isCards ? '6px' : '0',
-                border: isCards ? `1px solid ${tokens.accentColor}20` : 'none'
-              }}
-            >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                <span style={{ fontWeight: 700, color: '#0f172a' }}>{proj.name}</span>
-                {proj.link && (
-                  <a
-                    href={proj.link}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={{ fontSize: '8.5pt', color: tokens.accentColor, textDecoration: 'none' }}
-                  >
-                    View Project ↗
-                  </a>
+          {projects.map((proj, projIdx) => {
+            const highlights = toStringArray(proj.highlights);
+            return (
+              <article 
+                key={proj.id || projIdx} 
+                className={isCards ? 'resume-card' : undefined}
+                style={{
+                  marginBottom: isCards ? '10px' : densityPadding,
+                  padding: isCards ? '10px 12px' : '0',
+                  backgroundColor: isCards ? '#ffffff' : 'transparent',
+                  borderRadius: isCards ? '6px' : '0',
+                  border: isCards ? `1px solid ${tokens.accentColor}20` : 'none'
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                  <span style={{ fontWeight: 700, color: '#0f172a' }}>{proj.name}</span>
+                  {proj.link && (
+                    <a
+                      href={proj.link}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ fontSize: '8.5pt', color: tokens.accentColor, textDecoration: 'none' }}
+                    >
+                      View Project ↗
+                    </a>
+                  )}
+                </div>
+                {proj.description && <p style={{ margin: '2px 0 4px 0', fontSize: '9pt', color: '#475569' }}>{proj.description}</p>}
+                {highlights.length > 0 && (
+                  <ul style={{ paddingLeft: '18px', margin: '2px 0', fontSize: '9pt', color: '#334155' }}>
+                    {highlights.map((h, hIdx) => (
+                      <li key={hIdx}>{h}</li>
+                    ))}
+                  </ul>
                 )}
-              </div>
-              <p style={{ margin: '2px 0 4px 0', fontSize: '9pt', color: '#475569' }}>{proj.description}</p>
-              {proj.highlights && proj.highlights.length > 0 && (
-                <ul style={{ paddingLeft: '18px', margin: '2px 0', fontSize: '9pt', color: '#334155' }}>
-                  {proj.highlights.map((h, hIdx) => (
-                    <li key={hIdx}>{h}</li>
-                  ))}
-                </ul>
-              )}
-            </article>
-          ))}
+              </article>
+            );
+          })}
         </div>
       </section>
     );
@@ -506,13 +520,13 @@ export const DynamicResumeRenderer: React.FC<DynamicResumeRendererProps> = ({
 
   // Certifications Section
   const renderCertificationsSection = () => {
-    if (!certifications || certifications.length === 0) return null;
+    if (!certifications || !Array.isArray(certifications) || certifications.length === 0) return null;
     return (
       <section className="resume-section resume-certs-section" style={{ marginBottom: sectionSpacing }}>
         {renderSectionTitle('Certifications', '📜', Award)}
         <ul style={{ paddingLeft: '18px', margin: '4px 0', color: '#334155' }}>
-          {certifications.map((cert) => (
-            <li key={cert.id} style={{ marginBottom: '2px', fontSize: '9pt' }}>
+          {certifications.map((cert, certIdx) => (
+            <li key={cert.id || certIdx} style={{ marginBottom: '2px', fontSize: '9pt' }}>
               <span style={{ fontWeight: 600 }}>{cert.name}</span>
               {cert.issuer && <span style={{ color: '#64748b' }}> — {cert.issuer}</span>}
               {cert.date && <span style={{ color: '#64748b' }}> ({cert.date})</span>}
@@ -525,13 +539,13 @@ export const DynamicResumeRenderer: React.FC<DynamicResumeRendererProps> = ({
 
   // Languages Section
   const renderLanguagesSection = () => {
-    if (!languages || languages.length === 0) return null;
+    if (!languages || !Array.isArray(languages) || languages.length === 0) return null;
     return (
       <section className="resume-section resume-languages-section" style={{ marginBottom: sectionSpacing }}>
         {renderSectionTitle('Languages', '🌐', Globe)}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', fontSize: '9pt' }}>
           {languages.map((lang, lIdx) => (
-            <span key={lIdx} style={{ color: '#334155' }}>
+            <span key={lang.id || lIdx} style={{ color: '#334155' }}>
               <strong>{lang.language}</strong>: {lang.proficiency}
             </span>
           ))}
@@ -542,13 +556,13 @@ export const DynamicResumeRenderer: React.FC<DynamicResumeRendererProps> = ({
 
   // Volunteer Section
   const renderVolunteerSection = () => {
-    if (!volunteer || volunteer.length === 0) return null;
+    if (!volunteer || !Array.isArray(volunteer) || volunteer.length === 0) return null;
     return (
       <section className="resume-section resume-volunteer-section" style={{ marginBottom: sectionSpacing }}>
         {renderSectionTitle('Volunteer & Leadership', '🤝', HeartHandshake)}
         <div>
-          {volunteer.map((v) => (
-            <div key={v.id} style={{ marginBottom: '4px', fontSize: '9pt' }}>
+          {volunteer.map((v, vIdx) => (
+            <div key={v.id || vIdx} style={{ marginBottom: '4px', fontSize: '9pt' }}>
               <span style={{ fontWeight: 700, color: '#0f172a' }}>{v.role}</span>
               <span style={{ color: '#475569' }}> — {v.organization}</span>
               {v.contribution && <p style={{ margin: '2px 0 0 0', color: '#64748b' }}>{v.contribution}</p>}
@@ -561,13 +575,13 @@ export const DynamicResumeRenderer: React.FC<DynamicResumeRendererProps> = ({
 
   // Awards Section
   const renderAwardsSection = () => {
-    if (!awards || awards.length === 0) return null;
+    if (!awards || !Array.isArray(awards) || awards.length === 0) return null;
     return (
       <section className="resume-section resume-awards-section" style={{ marginBottom: sectionSpacing }}>
         {renderSectionTitle('Honors & Awards', '🏆', Trophy)}
         <ul style={{ paddingLeft: '18px', margin: '4px 0', color: '#334155' }}>
-          {awards.map((aw) => (
-            <li key={aw.id} style={{ marginBottom: '2px', fontSize: '9pt' }}>
+          {awards.map((aw, awIdx) => (
+            <li key={aw.id || awIdx} style={{ marginBottom: '2px', fontSize: '9pt' }}>
               <span style={{ fontWeight: 600 }}>{aw.name}</span>
               {aw.issuer && <span style={{ color: '#64748b' }}> — {aw.issuer}</span>}
               {aw.date && <span style={{ color: '#64748b' }}> ({aw.date})</span>}

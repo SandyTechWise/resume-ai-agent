@@ -9,6 +9,7 @@ import { resumeDataToPlainText } from '@/lib/plainTextFormatter';
 import { computeLocalAtsScore } from '@/lib/gemini';
 import { buildPrecisionEditPrompt } from '@/constants/prompts';
 import { resolveEffectiveLlmConfig } from '@/constants/secrets';
+import { sanitizeResumeData } from '@/lib/resumeSanitizer';
 
 interface SurgicalEditRequestBody {
   currentResume: ResumeData;
@@ -64,7 +65,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       };
 
       if (parsed.updatedResume) {
-        updatedResume = parsed.updatedResume;
+        updatedResume = sanitizeResumeData(parsed.updatedResume);
       }
       if (parsed.diff) {
         diff = parsed.diff;
@@ -108,11 +109,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       }
     }
 
-    const updatedPlainText = resumeDataToPlainText(updatedResume);
-    const atsAnalysis = computeLocalAtsScore(updatedResume, undefined, targetRole);
+    const sanitizedResume = sanitizeResumeData(updatedResume);
+    const updatedPlainText = resumeDataToPlainText(sanitizedResume);
+    const atsAnalysis = computeLocalAtsScore(sanitizedResume, undefined, targetRole);
 
     const responsePayload: SurgicalEditResponse = {
-      updatedResume,
+      updatedResume: sanitizedResume,
       updatedPlainText,
       diff,
       suggestedWords

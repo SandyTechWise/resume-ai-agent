@@ -191,11 +191,13 @@ export type LayoutStructure =
 
 export type PageSize = 'a4' | 'letter';
 export type SpacingPreset = 'comfortable' | 'balanced' | 'compact';
+export type TargetPageCount = 1 | 2 | 3;
 
 export interface PageLayoutSettings {
   pageSize: PageSize; // 'a4' (default) | 'letter'
   spacingPreset: SpacingPreset; // 'balanced' (default) | 'comfortable' | 'compact'
   pageBreakSections?: string[]; // IDs of sections that start on a new page, e.g. ['education', 'skills']
+  targetPageCount?: TargetPageCount; // 1 | 2 | 3
 }
 
 // Dynamic, Independent Design Tokens for Prompt-Driven Styling without Template Limits
@@ -224,6 +226,7 @@ export interface ResumeDesignTokens {
   pageSize?: PageSize;
   spacingPreset?: SpacingPreset;
   pageBreakSections?: string[];
+  targetPageCount?: TargetPageCount;
 }
 
 export interface SurgicalEditResponse {
@@ -339,7 +342,7 @@ export interface CustomSectionFormEntry {
 export interface ResumePreferencesForm {
   targetCountryOrRegion?: string;
   resumeLanguage?: string;
-  desiredLength?: '1-page' | '2-pages' | 'no-preference';
+  desiredLength?: '1-page' | '2-pages' | '3-pages' | 'no-preference';
   includeOmitInstructions?: string;
   additionalContext?: string;
 }

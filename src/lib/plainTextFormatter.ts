@@ -1,5 +1,6 @@
 import { ResumeData } from '@/types/resume';
 import { heuristicExtractResume } from './documentParser';
+import { getSkillsList, getCategoryTitle, toStringArray } from './resumeSanitizer';
 
 /**
  * Converts structured ResumeData into clean, human-readable plain text
@@ -45,14 +46,16 @@ export function resumeDataToPlainText(resume: ResumeData): string {
       expLines.push(`${positionCompany}${location}`);
       if (dates) expLines.push(dates);
 
-      if (exp.bullets && exp.bullets.length > 0) {
-        exp.bullets.forEach((bullet) => {
+      const bullets = toStringArray(exp.bullets);
+      if (bullets.length > 0) {
+        bullets.forEach((bullet) => {
           if (bullet.trim()) expLines.push(`• ${bullet.trim()}`);
         });
       }
 
-      if (exp.technologies && exp.technologies.length > 0) {
-        expLines.push(`  Tools/Skills: ${exp.technologies.join(', ')}`);
+      const expTech = toStringArray(exp.technologies);
+      if (expTech.length > 0) {
+        expLines.push(`  Tools/Skills: ${expTech.join(', ')}`);
       }
       expLines.push('');
     });
@@ -78,14 +81,17 @@ export function resumeDataToPlainText(resume: ResumeData): string {
   }
 
   // 5. Skills
-  if (resume.skills && resume.skills.length > 0) {
+  if (resume.skills && Array.isArray(resume.skills) && resume.skills.length > 0) {
     const skillLines: string[] = ['\nSKILLS'];
-    resume.skills.forEach((cat) => {
-      if (cat.skills && cat.skills.length > 0) {
-        skillLines.push(`${cat.category}: ${cat.skills.join(', ')}`);
+    resume.skills.forEach((cat, idx) => {
+      const skillList = getSkillsList(cat);
+      if (skillList.length > 0) {
+        skillLines.push(`${getCategoryTitle(cat, idx)}: ${skillList.join(', ')}`);
       }
     });
-    parts.push(skillLines.join('\n'));
+    if (skillLines.length > 1) {
+      parts.push(skillLines.join('\n'));
+    }
   }
 
   // 6. Projects
@@ -94,11 +100,13 @@ export function resumeDataToPlainText(resume: ResumeData): string {
     resume.projects.forEach((proj) => {
       projLines.push(proj.name + (proj.link ? ` (${proj.link})` : ''));
       if (proj.description) projLines.push(`  ${proj.description}`);
-      if (proj.highlights && proj.highlights.length > 0) {
-        proj.highlights.forEach((h) => projLines.push(`  • ${h}`));
+      const highlights = toStringArray(proj.highlights);
+      if (highlights.length > 0) {
+        highlights.forEach((h) => projLines.push(`  • ${h}`));
       }
-      if (proj.technologies && proj.technologies.length > 0) {
-        projLines.push(`  Technologies: ${proj.technologies.join(', ')}`);
+      const projTech = toStringArray(proj.technologies);
+      if (projTech.length > 0) {
+        projLines.push(`  Technologies: ${projTech.join(', ')}`);
       }
     });
     parts.push(projLines.join('\n'));

@@ -11,6 +11,7 @@ import {
   BorderStyle
 } from 'docx';
 import { ResumeData, ResumeDesignTokens, PageLayoutSettings, PageSize, SpacingPreset } from '@/types/resume';
+import { getSkillsList, getCategoryTitle, toStringArray } from './resumeSanitizer';
 
 /**
  * Calculates page dimensions and margins in twips according to user-selected page format
@@ -114,11 +115,10 @@ export async function buildResumeDocxBlob(
 
   const children: Paragraph[] = [];
 
-  // Helper to create styled section headings with keepWithNext to prevent orphaned titles
+  // Helper to create styled section headings with keepNext to prevent orphaned titles
   const createSectionHeading = (title: string, sectionId: string): Paragraph => {
     const shouldPageBreak = pageBreakSections.includes(sectionId);
     return new Paragraph({
-      text: title.toUpperCase(),
       heading: HeadingLevel.HEADING_2,
       pageBreakBefore: shouldPageBreak,
       keepNext: true,
@@ -305,8 +305,9 @@ export async function buildResumeDocxBlob(
       );
 
       // Bullets
-      if (exp.bullets && exp.bullets.length > 0) {
-        exp.bullets.forEach((bullet) => {
+      const bullets = toStringArray(exp.bullets);
+      if (bullets.length > 0) {
+        bullets.forEach((bullet) => {
           if (bullet.trim()) {
             children.push(
               new Paragraph({
@@ -327,7 +328,8 @@ export async function buildResumeDocxBlob(
       }
 
       // Technologies used
-      if (exp.technologies && exp.technologies.length > 0) {
+      const technologies = toStringArray(exp.technologies);
+      if (technologies.length > 0) {
         children.push(
           new Paragraph({
             spacing: { before: 20, after: spaceAfterEntry, line: lineSpacing },
@@ -340,7 +342,7 @@ export async function buildResumeDocxBlob(
                 size: 17
               }),
               new TextRun({
-                text: exp.technologies.join(', '),
+                text: technologies.join(', '),
                 color: textHex,
                 font: fontName,
                 size: 17
@@ -402,23 +404,27 @@ export async function buildResumeDocxBlob(
   }
 
   // 7. Skills & Domain Competencies
-  if (data.skills && data.skills.length > 0) {
+  if (data.skills && Array.isArray(data.skills) && data.skills.length > 0) {
     children.push(createSectionHeading('Skills & Competencies', 'skills'));
 
-    data.skills.forEach((cat) => {
+    data.skills.forEach((cat, idx) => {
+      const skillList = getSkillsList(cat);
+      if (skillList.length === 0) return;
+      const category = getCategoryTitle(cat, idx);
+
       children.push(
         new Paragraph({
           spacing: { before: 30, after: spaceAfterBullet, line: lineSpacing },
           children: [
             new TextRun({
-              text: `${cat.category}: `,
+              text: `${category}: `,
               bold: true,
               color: textHex,
               font: fontName,
               size: effectiveSpacing === 'compact' ? 18 : 19
             }),
             new TextRun({
-              text: cat.skills.join(', '),
+              text: skillList.join(', '),
               color: textHex,
               font: fontName,
               size: effectiveSpacing === 'compact' ? 18 : 19
@@ -474,8 +480,9 @@ export async function buildResumeDocxBlob(
         );
       }
 
-      if (proj.highlights && proj.highlights.length > 0) {
-        proj.highlights.forEach((h) => {
+      const highlights = toStringArray(proj.highlights);
+      if (highlights.length > 0) {
+        highlights.forEach((h) => {
           children.push(
             new Paragraph({
               bullet: { level: 0 },

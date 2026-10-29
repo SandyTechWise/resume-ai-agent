@@ -7,6 +7,7 @@ import {
   PageSize, 
   SpacingPreset 
 } from '@/types/resume';
+import { getSkillsList, getCategoryTitle, toStringArray } from './resumeSanitizer';
 
 function escapeHtml(str?: string): string {
   if (!str) return '';
@@ -430,17 +431,22 @@ export function renderStandaloneResumeHtml(
           </div>
         </div>
 
-        ${skills && skills.length > 0 ? `
+        ${skills && Array.isArray(skills) && skills.length > 0 ? `
         <section class="${pageBreakSections.includes('skills') ? 'page-break-before' : ''}">
           <h2>${useEmojis ? '🎨 ' : ''}Skills & Competencies</h2>
-          ${skills.map(cat => `
+          ${skills.map((cat, idx) => {
+            const skillList = getSkillsList(cat);
+            if (skillList.length === 0) return '';
+            const category = getCategoryTitle(cat, idx);
+            return `
             <div style="margin-bottom: 6px;">
-              <div style="font-weight: 700; font-size: 8pt; color: #0f172a; margin-bottom: 2px;">${escapeHtml(cat.category)}:</div>
+              <div style="font-weight: 700; font-size: 8pt; color: #0f172a; margin-bottom: 2px;">${escapeHtml(category)}:</div>
               <div>
-                ${cat.skills.map(s => `<span class="skill-pill">${escapeHtml(s)}</span>`).join('')}
+                ${skillList.map(s => `<span class="skill-pill">${escapeHtml(s)}</span>`).join('')}
               </div>
             </div>
-          `).join('')}
+            `;
+          }).join('')}
         </section>
         ` : ''}
 
@@ -493,9 +499,12 @@ export function renderStandaloneResumeHtml(
                 <div><span class="role-title">${escapeHtml(exp.position)}</span> — <span class="company">${escapeHtml(exp.company)}</span></div>
                 <span class="dates">${escapeHtml(exp.startDate)} – ${exp.current ? 'Present' : escapeHtml(exp.endDate)}</span>
               </div>
-              ${exp.bullets && exp.bullets.length > 0 ? `
-                <ul class="bullet-list">${exp.bullets.map(b => `<li class="bullet-item">${escapeHtml(b)}</li>`).join('')}</ul>
-              ` : ''}
+              ${(() => {
+                const bullets = toStringArray(exp.bullets);
+                return bullets.length > 0
+                  ? `<ul class="bullet-list">${bullets.map(b => `<li class="bullet-item">${escapeHtml(b)}</li>`).join('')}</ul>`
+                  : '';
+              })()}
             </div>
           `).join('')}
         </section>` : ''}
@@ -547,9 +556,12 @@ export function renderStandaloneResumeHtml(
               <div><span class="role-title">${escapeHtml(exp.position)}</span> — <span class="company">${escapeHtml(exp.company)}</span></div>
               <span class="dates">${escapeHtml(exp.startDate)} – ${exp.current ? 'Present' : escapeHtml(exp.endDate)}</span>
             </div>
-            ${exp.bullets && exp.bullets.length > 0 ? `
-              <ul class="bullet-list">${exp.bullets.map(b => `<li class="bullet-item">${escapeHtml(b)}</li>`).join('')}</ul>
-            ` : ''}
+            ${(() => {
+              const bullets = toStringArray(exp.bullets);
+              return bullets.length > 0
+                ? `<ul class="bullet-list">${bullets.map(b => `<li class="bullet-item">${escapeHtml(b)}</li>`).join('')}</ul>`
+                : '';
+            })()}
           </div>
         `).join('')}
       </section>` : ''}
@@ -567,18 +579,23 @@ export function renderStandaloneResumeHtml(
         `).join('')}
       </section>` : ''}
 
-      ${skills && skills.length > 0 ? `
+      ${skills && Array.isArray(skills) && skills.length > 0 ? `
       <section class="${pageBreakSections.includes('skills') ? 'page-break-before' : ''}">
         <h2>${useEmojis ? '🛠️ ' : ''}Skills & Competencies</h2>
-        ${skills.map(cat => `
+        ${skills.map((cat, idx) => {
+          const skillList = getSkillsList(cat);
+          if (skillList.length === 0) return '';
+          const category = getCategoryTitle(cat, idx);
+          return `
           <div class="skill-line">
-            <span class="skill-title">${escapeHtml(cat.category)}: </span>
+            <span class="skill-title">${escapeHtml(category)}: </span>
             ${isPills 
-              ? cat.skills.map(s => `<span class="skill-pill">${escapeHtml(s)}</span>`).join('')
-              : cat.skills.map(s => `<span class="competency-tag">${escapeHtml(s)}</span>`).join('')
+              ? skillList.map(s => `<span class="skill-pill">${escapeHtml(s)}</span>`).join('')
+              : skillList.map(s => `<span class="competency-tag">${escapeHtml(s)}</span>`).join('')
             }
           </div>
-        `).join('')}
+          `;
+        }).join('')}
       </section>` : ''}
 
       ${projects && projects.length > 0 ? `

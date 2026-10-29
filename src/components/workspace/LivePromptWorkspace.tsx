@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ResumeData, AtsScoreDetails, ResumeDesignTokens, PageSize, SpacingPreset } from '@/types/resume';
+import { ResumeData, AtsScoreDetails, ResumeDesignTokens, PageSize, SpacingPreset, TargetPageCount } from '@/types/resume';
 import { LLMConfig } from '@/types/llm';
 import { DynamicResumeRenderer, DEFAULT_DESIGN_TOKENS } from '../DynamicResumeRenderer';
-import { plainTextToResumeData } from '@/lib/plainTextFormatter';
+import { plainTextToResumeData, resumeDataToPlainText } from '@/lib/plainTextFormatter';
 import { printResumeDocument, downloadStandaloneHtml } from '@/lib/htmlResumeRenderer';
 import { downloadResumeDocx } from '@/lib/docxExport';
+import { sanitizeResumeData } from '@/lib/resumeSanitizer';
 import { 
   ArrowLeft, 
   Send, 
@@ -20,7 +21,8 @@ import {
   Palette,
   Key,
   Wand2,
-  FileDown
+  FileDown,
+  Code2
 } from 'lucide-react';
 
 interface LivePromptWorkspaceProps {
@@ -44,7 +46,7 @@ export const LivePromptWorkspace: React.FC<LivePromptWorkspaceProps> = ({
   onBackToIntake,
   onOpenKeyModal
 }) => {
-  const [resumeData, setResumeData] = useState<ResumeData>(initialResume);
+  const [resumeData, setResumeData] = useState<ResumeData>(() => sanitizeResumeData(initialResume));
   const [plainText, setPlainText] = useState<string>(initialPlainText);
   const [atsScore, setAtsScore] = useState<AtsScoreDetails>(initialAtsScore);
   const [suggestedWords, setSuggestedWords] = useState<string[]>(initialSuggestedWords);
@@ -82,6 +84,9 @@ export const LivePromptWorkspace: React.FC<LivePromptWorkspaceProps> = ({
   const [pageBreakSections, setPageBreakSections] = useState<string[]>(designTokens.pageBreakSections || []);
   const [showPageBreaksModal, setShowPageBreaksModal] = useState<boolean>(false);
   const [estimatedPages, setEstimatedPages] = useState<number>(1);
+  const [targetPageCount, setTargetPageCount] = useState<TargetPageCount>(designTokens.targetPageCount || 1);
+  const [isPaginating, setIsPaginating] = useState<boolean>(false);
+  const [paginationMessage, setPaginationMessage] = useState<string | null>(null);
   const [isExportingDocx, setIsExportingDocx] = useState<boolean>(false);
   const resumeContainerRef = useRef<HTMLDivElement | null>(null);
 
@@ -115,12 +120,69 @@ export const LivePromptWorkspace: React.FC<LivePromptWorkspaceProps> = ({
     setDesignTokens((prev) => ({ ...prev, pageBreakSections: updated }));
   };
 
+  // AI-powered content adaptation to perfectly fill 1, 2, or 3 pages
+  const handleAlignToPageCount = async (targetPages: TargetPageCount) => {
+    try {
+      setIsPaginating(true);
+      setPaginationMessage(null);
+      setPromptError(null);
+
+      const res = await fetch('/api/resume/paginate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(llmConfig.apiKey ? { 'x-api-key': llmConfig.apiKey } : {})
+        },
+        body: JSON.stringify({
+          currentResume: resumeData,
+          targetPageCount: targetPages,
+          targetRole,
+          pageSize,
+          currentSpacing: spacingPreset,
+          llmConfig
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'Failed to align resume to target page count.');
+      }
+
+      setHistory((prev) => [...prev, { resume: resumeData, plainText }]);
+      const sanitized = sanitizeResumeData(data.updatedResume);
+      setResumeData(sanitized);
+      setPlainText(resumeDataToPlainText(sanitized));
+      setTargetPageCount(targetPages);
+
+      if (data.recommendedSpacing) {
+        setSpacingPreset(data.recommendedSpacing);
+        setDesignTokens((prev) => ({
+          ...prev,
+          spacingPreset: data.recommendedSpacing,
+          targetPageCount: targetPages
+        }));
+      } else {
+        setDesignTokens((prev) => ({ ...prev, targetPageCount: targetPages }));
+      }
+
+      setPaginationMessage(data.summaryOfAdjustments || `Successfully aligned resume content for ${targetPages} page(s).`);
+      setViewMode('styled');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to calibrate resume pages.';
+      setPromptError(msg);
+    } finally {
+      setIsPaginating(false);
+    }
+  };
+
   // Quick prompt suggestions
   const quickChips = [
+    'Align my resume for 2 pages',
+    'Condense resume to 1 page',
+    'Expand resume to 3 pages',
     'Change my headline to ' + (targetRole || 'Senior Specialist'),
     'Strengthen action verbs in my latest job',
-    'Quantify experience bullets with measurable metrics',
-    'Condense professional summary to 2 punchy sentences'
+    'Quantify experience bullets with measurable metrics'
   ];
 
   // Handle Surgical Edit Submission
@@ -150,6 +212,35 @@ export const LivePromptWorkspace: React.FC<LivePromptWorkspaceProps> = ({
       ((lower.includes('executive') || lower.includes('minimal') || lower.includes('academic') || lower.includes('modern') || lower.includes('creative')) && 
        (lower.includes('template') || lower.includes('preset') || lower.includes('style') || lower.includes('theme')))
     );
+
+    // Check if user entered a target page count instruction
+    const isPageIntent = (
+      lower.includes('1 page') ||
+      lower.includes('one page') ||
+      lower.includes('2 page') ||
+      lower.includes('two page') ||
+      lower.includes('3 page') ||
+      lower.includes('three page') ||
+      lower.includes('single page') ||
+      lower.includes('page count') ||
+      lower.includes('condense to 1') ||
+      lower.includes('fit on 1') ||
+      lower.includes('fit into 1') ||
+      lower.includes('expand to 2') ||
+      lower.includes('expand to 3')
+    );
+
+    if (isPageIntent) {
+      let target: TargetPageCount = 1;
+      if (lower.includes('2 page') || lower.includes('two page') || lower.includes('expand to 2')) {
+        target = 2;
+      } else if (lower.includes('3 page') || lower.includes('three page') || lower.includes('expand to 3')) {
+        target = 3;
+      }
+      await handleAlignToPageCount(target);
+      setPromptInput('');
+      return;
+    }
 
     if (isStyle) {
       await handleApplyDirectStylePrompt(instruction);
@@ -191,7 +282,7 @@ export const LivePromptWorkspace: React.FC<LivePromptWorkspaceProps> = ({
       }
 
       if (data.updatedResume) {
-        setResumeData(data.updatedResume);
+        setResumeData(sanitizeResumeData(data.updatedResume));
       }
       if (data.updatedPlainText) {
         setPlainText(data.updatedPlainText);
@@ -219,7 +310,7 @@ export const LivePromptWorkspace: React.FC<LivePromptWorkspaceProps> = ({
   const handleRevert = () => {
     if (history.length === 0) return;
     const previous = history[history.length - 1];
-    setResumeData(previous.resume);
+    setResumeData(sanitizeResumeData(previous.resume));
     setPlainText(previous.plainText);
     setHistory((prev) => prev.slice(0, prev.length - 1));
     setLatestDiff(null);
@@ -234,7 +325,7 @@ export const LivePromptWorkspace: React.FC<LivePromptWorkspaceProps> = ({
   const handleSyncPlainText = () => {
     try {
       const parsed = plainTextToResumeData(plainText);
-      setResumeData(parsed);
+      setResumeData(sanitizeResumeData(parsed));
       setLatestDiff({
         section: 'Plain Text',
         before: '',
@@ -578,6 +669,30 @@ export const LivePromptWorkspace: React.FC<LivePromptWorkspaceProps> = ({
 
         {/* Right Action Buttons */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          {/* API Explorer Link */}
+          <a
+            href="/api-docs"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Open Interactive API Explorer (Swagger / OpenAPI)"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '4px',
+              padding: '6px 10px',
+              backgroundColor: '#f8fafc',
+              border: '1px solid #e2e8f0',
+              borderRadius: '6px',
+              fontSize: '12px',
+              fontWeight: 600,
+              color: '#334155',
+              textDecoration: 'none'
+            }}
+          >
+            <Code2 size={13} />
+            <span>API Docs</span>
+          </a>
+
           {/* AI Key Status Button */}
           <button
             onClick={onOpenKeyModal}
@@ -1583,11 +1698,9 @@ export const LivePromptWorkspace: React.FC<LivePromptWorkspaceProps> = ({
                   width: '100%',
                   maxWidth: pageSize === 'letter' ? '215.9mm' : '210mm',
                   display: 'flex',
-                  flexWrap: 'wrap',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
+                  flexDirection: 'column',
                   gap: '10px',
-                  padding: '10px 16px',
+                  padding: '12px 16px',
                   backgroundColor: '#ffffff',
                   border: '1px solid #e2e8f0',
                   borderRadius: '10px',
@@ -1595,108 +1708,183 @@ export const LivePromptWorkspace: React.FC<LivePromptWorkspaceProps> = ({
                   boxShadow: '0 1px 4px rgba(0,0,0,0.04)'
                 }}
               >
-                {/* Page Size Switcher (A4 Default vs US Letter) */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span style={{ fontSize: '12px', fontWeight: 700, color: '#475569' }}>Page Size:</span>
-                  <div style={{ display: 'flex', backgroundColor: '#f1f5f9', padding: '2px', borderRadius: '6px' }}>
+                {/* Row 1: Target Page Count & AI Alignment Action */}
+                <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: '10px', paddingBottom: '10px', borderBottom: '1px solid #f1f5f9' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ fontSize: '12px', fontWeight: 800, color: '#0f172a' }}>🎯 Target Page Count:</span>
+                    <div style={{ display: 'flex', backgroundColor: '#f1f5f9', padding: '2px', borderRadius: '6px' }}>
+                      {([1, 2, 3] as TargetPageCount[]).map((count) => (
+                        <button
+                          key={count}
+                          type="button"
+                          onClick={() => {
+                            setTargetPageCount(count);
+                            handleAlignToPageCount(count);
+                          }}
+                          disabled={isPaginating}
+                          style={{
+                            padding: '4px 12px',
+                            fontSize: '12px',
+                            fontWeight: 700,
+                            border: 'none',
+                            borderRadius: '4px',
+                            cursor: isPaginating ? 'not-allowed' : 'pointer',
+                            backgroundColor: targetPageCount === count ? '#2563eb' : 'transparent',
+                            color: targetPageCount === count ? '#ffffff' : '#64748b'
+                          }}
+                        >
+                          {count} {count === 1 ? 'Page' : 'Pages'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                     <button
                       type="button"
-                      onClick={() => handlePageSizeChange('a4')}
+                      onClick={() => handleAlignToPageCount(targetPageCount)}
+                      disabled={isPaginating}
                       style={{
-                        padding: '4px 10px',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        padding: '6px 14px',
                         fontSize: '12px',
                         fontWeight: 700,
+                        color: '#ffffff',
+                        backgroundColor: '#0f172a',
                         border: 'none',
-                        borderRadius: '4px',
-                        cursor: 'pointer',
-                        backgroundColor: pageSize === 'a4' ? '#0f172a' : 'transparent',
-                        color: pageSize === 'a4' ? '#ffffff' : '#64748b'
+                        borderRadius: '6px',
+                        cursor: isPaginating ? 'not-allowed' : 'pointer',
+                        boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
                       }}
                     >
-                      A4 (Default)
+                      {isPaginating ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
+                      <span>{isPaginating ? `Aligning for ${targetPageCount} Page(s)...` : `AI Align Content to ${targetPageCount} Page(s)`}</span>
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => handlePageSizeChange('letter')}
+
+                    <div
                       style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '5px',
                         padding: '4px 10px',
+                        backgroundColor: estimatedPages === targetPageCount ? '#f0fdf4' : estimatedPages > targetPageCount ? '#fff1f2' : '#eff6ff',
+                        border: `1px solid ${estimatedPages === targetPageCount ? '#bbf7d0' : estimatedPages > targetPageCount ? '#fecdd3' : '#bfdbfe'}`,
+                        borderRadius: '6px',
                         fontSize: '12px',
                         fontWeight: 700,
-                        border: 'none',
-                        borderRadius: '4px',
-                        cursor: 'pointer',
-                        backgroundColor: pageSize === 'letter' ? '#0f172a' : 'transparent',
-                        color: pageSize === 'letter' ? '#ffffff' : '#64748b'
+                        color: estimatedPages === targetPageCount ? '#15803d' : estimatedPages > targetPageCount ? '#be123c' : '#1d4ed8'
                       }}
                     >
-                      US Letter
-                    </button>
+                      <span>📄 Current: {estimatedPages} {estimatedPages === 1 ? 'Page' : 'Pages'}</span>
+                    </div>
                   </div>
                 </div>
 
-                {/* Spacing Presets (Comfortable, Balanced, Compact) */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span style={{ fontSize: '12px', fontWeight: 700, color: '#475569' }}>Spacing:</span>
-                  <div style={{ display: 'flex', backgroundColor: '#f1f5f9', padding: '2px', borderRadius: '6px' }}>
-                    <button
-                      type="button"
-                      onClick={() => handleSpacingChange('compact')}
-                      title="Compact (tight 1-page fit, 10mm margins)"
-                      style={{
-                        padding: '4px 8px',
-                        fontSize: '12px',
-                        fontWeight: 600,
-                        border: 'none',
-                        borderRadius: '4px',
-                        cursor: 'pointer',
-                        backgroundColor: spacingPreset === 'compact' ? '#ffffff' : 'transparent',
-                        color: spacingPreset === 'compact' ? '#0f172a' : '#64748b',
-                        boxShadow: spacingPreset === 'compact' ? '0 1px 2px rgba(0,0,0,0.06)' : 'none'
-                      }}
-                    >
-                      Compact
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleSpacingChange('balanced')}
-                      title="Balanced (13mm margins, default)"
-                      style={{
-                        padding: '4px 8px',
-                        fontSize: '12px',
-                        fontWeight: 600,
-                        border: 'none',
-                        borderRadius: '4px',
-                        cursor: 'pointer',
-                        backgroundColor: spacingPreset === 'balanced' ? '#ffffff' : 'transparent',
-                        color: spacingPreset === 'balanced' ? '#0f172a' : '#64748b',
-                        boxShadow: spacingPreset === 'balanced' ? '0 1px 2px rgba(0,0,0,0.06)' : 'none'
-                      }}
-                    >
-                      Balanced
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleSpacingChange('comfortable')}
-                      title="Comfortable (18mm margins, spacious)"
-                      style={{
-                        padding: '4px 8px',
-                        fontSize: '12px',
-                        fontWeight: 600,
-                        border: 'none',
-                        borderRadius: '4px',
-                        cursor: 'pointer',
-                        backgroundColor: spacingPreset === 'comfortable' ? '#ffffff' : 'transparent',
-                        color: spacingPreset === 'comfortable' ? '#0f172a' : '#64748b',
-                        boxShadow: spacingPreset === 'comfortable' ? '0 1px 2px rgba(0,0,0,0.06)' : 'none'
-                      }}
-                    >
-                      Comfortable
-                    </button>
+                {/* Row 2: Page Size & Spacing Presets */}
+                <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: '10px' }}>
+                  {/* Page Size Switcher (A4 Default vs US Letter) */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ fontSize: '12px', fontWeight: 700, color: '#475569' }}>Format:</span>
+                    <div style={{ display: 'flex', backgroundColor: '#f1f5f9', padding: '2px', borderRadius: '6px' }}>
+                      <button
+                        type="button"
+                        onClick={() => handlePageSizeChange('a4')}
+                        style={{
+                          padding: '3px 8px',
+                          fontSize: '12px',
+                          fontWeight: 700,
+                          border: 'none',
+                          borderRadius: '4px',
+                          cursor: 'pointer',
+                          backgroundColor: pageSize === 'a4' ? '#0f172a' : 'transparent',
+                          color: pageSize === 'a4' ? '#ffffff' : '#64748b'
+                        }}
+                      >
+                        A4 (Default)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handlePageSizeChange('letter')}
+                        style={{
+                          padding: '3px 8px',
+                          fontSize: '12px',
+                          fontWeight: 700,
+                          border: 'none',
+                          borderRadius: '4px',
+                          cursor: 'pointer',
+                          backgroundColor: pageSize === 'letter' ? '#0f172a' : 'transparent',
+                          color: pageSize === 'letter' ? '#ffffff' : '#64748b'
+                        }}
+                      >
+                        US Letter
+                      </button>
+                    </div>
                   </div>
-                </div>
 
-                {/* Section Breaks Trigger & Live Page Count Badge */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  {/* Spacing Presets */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ fontSize: '12px', fontWeight: 700, color: '#475569' }}>Spacing:</span>
+                    <div style={{ display: 'flex', backgroundColor: '#f1f5f9', padding: '2px', borderRadius: '6px' }}>
+                      <button
+                        type="button"
+                        onClick={() => handleSpacingChange('compact')}
+                        title="Compact (10mm margins, tight fit)"
+                        style={{
+                          padding: '3px 8px',
+                          fontSize: '12px',
+                          fontWeight: 600,
+                          border: 'none',
+                          borderRadius: '4px',
+                          cursor: 'pointer',
+                          backgroundColor: spacingPreset === 'compact' ? '#ffffff' : 'transparent',
+                          color: spacingPreset === 'compact' ? '#0f172a' : '#64748b',
+                          boxShadow: spacingPreset === 'compact' ? '0 1px 2px rgba(0,0,0,0.06)' : 'none'
+                        }}
+                      >
+                        Compact
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSpacingChange('balanced')}
+                        title="Balanced (13mm margins, default)"
+                        style={{
+                          padding: '3px 8px',
+                          fontSize: '12px',
+                          fontWeight: 600,
+                          border: 'none',
+                          borderRadius: '4px',
+                          cursor: 'pointer',
+                          backgroundColor: spacingPreset === 'balanced' ? '#ffffff' : 'transparent',
+                          color: spacingPreset === 'balanced' ? '#0f172a' : '#64748b',
+                          boxShadow: spacingPreset === 'balanced' ? '0 1px 2px rgba(0,0,0,0.06)' : 'none'
+                        }}
+                      >
+                        Balanced
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSpacingChange('comfortable')}
+                        title="Comfortable (18mm margins, spacious)"
+                        style={{
+                          padding: '3px 8px',
+                          fontSize: '12px',
+                          fontWeight: 600,
+                          border: 'none',
+                          borderRadius: '4px',
+                          cursor: 'pointer',
+                          backgroundColor: spacingPreset === 'comfortable' ? '#ffffff' : 'transparent',
+                          color: spacingPreset === 'comfortable' ? '#0f172a' : '#64748b',
+                          boxShadow: spacingPreset === 'comfortable' ? '0 1px 2px rgba(0,0,0,0.06)' : 'none'
+                        }}
+                      >
+                        Comfortable
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Section Breaks Trigger */}
                   <button
                     type="button"
                     onClick={() => setShowPageBreaksModal(true)}
@@ -1716,28 +1904,80 @@ export const LivePromptWorkspace: React.FC<LivePromptWorkspaceProps> = ({
                   >
                     <span>Page Breaks{pageBreakSections.length > 0 ? ` (${pageBreakSections.length})` : ''}</span>
                   </button>
-
-                  <div
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '5px',
-                      padding: '4px 10px',
-                      backgroundColor: estimatedPages === 1 ? '#f0fdf4' : '#fffbeb',
-                      border: `1px solid ${estimatedPages === 1 ? '#bbf7d0' : '#fde68a'}`,
-                      borderRadius: '6px',
-                      fontSize: '12px',
-                      fontWeight: 700,
-                      color: estimatedPages === 1 ? '#15803d' : '#b45309'
-                    }}
-                  >
-                    <span>📄 {estimatedPages} {estimatedPages === 1 ? 'Page' : 'Pages'} ({pageSize.toUpperCase()})</span>
-                  </div>
                 </div>
               </div>
 
-              {/* One-Page Fit Recommendation Alert */}
-              {estimatedPages === 2 && spacingPreset !== 'compact' && (
+              {/* Status & Recommendations Banner */}
+              {paginationMessage && (
+                <div
+                  className="no-print"
+                  style={{
+                    width: '100%',
+                    maxWidth: pageSize === 'letter' ? '215.9mm' : '210mm',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    padding: '8px 14px',
+                    backgroundColor: '#f0fdf4',
+                    border: '1px solid #bbf7d0',
+                    borderRadius: '8px',
+                    marginBottom: '12px',
+                    fontSize: '12px',
+                    color: '#15803d'
+                  }}
+                >
+                  <span>✓ {paginationMessage}</span>
+                  <button
+                    type="button"
+                    onClick={() => setPaginationMessage(null)}
+                    style={{ background: 'none', border: 'none', color: '#15803d', cursor: 'pointer', fontWeight: 700 }}
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
+
+              {/* Over-page Warning Alert */}
+              {estimatedPages > targetPageCount && !isPaginating && (
+                <div
+                  className="no-print"
+                  style={{
+                    width: '100%',
+                    maxWidth: pageSize === 'letter' ? '215.9mm' : '210mm',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    padding: '8px 14px',
+                    backgroundColor: '#fff1f2',
+                    border: '1px solid #fecdd3',
+                    borderRadius: '8px',
+                    marginBottom: '12px',
+                    fontSize: '12px',
+                    color: '#be123c'
+                  }}
+                >
+                  <span>⚠️ Resume content spans {estimatedPages} pages while your target is {targetPageCount} {targetPageCount === 1 ? 'page' : 'pages'}.</span>
+                  <button
+                    type="button"
+                    onClick={() => handleAlignToPageCount(targetPageCount)}
+                    style={{
+                      padding: '4px 10px',
+                      fontSize: '11px',
+                      fontWeight: 700,
+                      backgroundColor: '#e11d48',
+                      color: '#ffffff',
+                      border: 'none',
+                      borderRadius: '5px',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    ⚡ AI Condense to {targetPageCount} Page(s)
+                  </button>
+                </div>
+              )}
+
+              {/* Under-page Recommendation Alert */}
+              {estimatedPages < targetPageCount && !isPaginating && (
                 <div
                   className="no-print"
                   style={{
@@ -1755,10 +1995,10 @@ export const LivePromptWorkspace: React.FC<LivePromptWorkspaceProps> = ({
                     color: '#1e40af'
                   }}
                 >
-                  <span>💡 Resume is running slightly onto page 2. Switch to <strong>Compact</strong> spacing to fit cleanly onto 1 page without removing content.</span>
+                  <span>ℹ️ Resume fills only {estimatedPages} of your {targetPageCount} target pages. AI can expand your bullet metrics and project case studies.</span>
                   <button
                     type="button"
-                    onClick={() => handleSpacingChange('compact')}
+                    onClick={() => handleAlignToPageCount(targetPageCount)}
                     style={{
                       padding: '4px 10px',
                       fontSize: '11px',
@@ -1770,7 +2010,7 @@ export const LivePromptWorkspace: React.FC<LivePromptWorkspaceProps> = ({
                       cursor: 'pointer'
                     }}
                   >
-                    Fit to 1 Page
+                    ⚡ AI Expand to {targetPageCount} Pages
                   </button>
                 </div>
               )}

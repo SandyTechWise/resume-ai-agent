@@ -26,7 +26,8 @@ import {
   ArrowUp, 
   ArrowDown, 
   FileText,
-  Info
+  Info,
+  Code2
 } from 'lucide-react';
 import { UPLOAD_LIMITS } from '@/constants/api';
 
@@ -547,26 +548,49 @@ export const IntakeScreen: React.FC<IntakeScreenProps> = ({
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={onOpenKeyModal}
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '8px',
-            padding: '8px 14px',
-            backgroundColor: llmConfig.apiKey ? '#f0fdf4' : '#f8fafc',
-            border: `1px solid ${llmConfig.apiKey ? '#bbf7d0' : '#e2e8f0'}`,
-            borderRadius: '8px',
-            color: llmConfig.apiKey ? '#15803d' : '#475569',
-            fontSize: '13px',
-            fontWeight: 600,
-            cursor: 'pointer'
-          }}
-        >
-          <Key size={14} />
-          <span>{llmConfig.apiKey ? `${llmConfig.provider.toUpperCase()} Key Connected` : 'Connect AI Key'}</span>
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <a
+            href="/api-docs"
+            title="Interactive API Explorer (Swagger / OpenAPI)"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '8px 12px',
+              backgroundColor: '#f1f5f9',
+              border: '1px solid #e2e8f0',
+              borderRadius: '8px',
+              color: '#334155',
+              fontSize: '13px',
+              fontWeight: 600,
+              textDecoration: 'none'
+            }}
+          >
+            <Code2 size={14} />
+            <span>API Docs</span>
+          </a>
+
+          <button
+            type="button"
+            onClick={onOpenKeyModal}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '8px',
+              padding: '8px 14px',
+              backgroundColor: llmConfig.apiKey ? '#f0fdf4' : '#f8fafc',
+              border: `1px solid ${llmConfig.apiKey ? '#bbf7d0' : '#e2e8f0'}`,
+              borderRadius: '8px',
+              color: llmConfig.apiKey ? '#15803d' : '#475569',
+              fontSize: '13px',
+              fontWeight: 600,
+              cursor: 'pointer'
+            }}
+          >
+            <Key size={14} />
+            <span>{llmConfig.apiKey ? `${llmConfig.provider.toUpperCase()} Key Connected` : 'Connect AI Key'}</span>
+          </button>
+        </div>
       </header>
 
       {/* Entry Choice Section: "What would you like to do?" */}

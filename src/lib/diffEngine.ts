@@ -1,4 +1,5 @@
 import { ResumeData, ExperienceItem } from '@/types/resume';
+import { getSkillsList, getCategoryTitle, sanitizeResumeData } from './resumeSanitizer';
 
 export type DiffChangeType = 'added' | 'modified' | 'removed';
 
@@ -52,21 +53,24 @@ export function computeResumeDiff(
     };
   }
 
+  const cleanOld = sanitizeResumeData(oldResume);
+  const cleanNew = sanitizeResumeData(newResume);
+
   // 1. Compare Basics (Headline, Location, etc.)
-  if (oldResume.basics.headline?.trim() !== newResume.basics.headline?.trim()) {
+  if (cleanOld.basics.headline?.trim() !== cleanNew.basics.headline?.trim()) {
     items.push({
       id: 'diff-basics-headline',
       section: 'basics',
       sectionLabel: 'Header',
       contextTitle: 'Professional Headline',
       type: 'modified',
-      before: oldResume.basics.headline || '(empty)',
-      after: newResume.basics.headline || '(empty)'
+      before: cleanOld.basics.headline || '(empty)',
+      after: cleanNew.basics.headline || '(empty)'
     });
   }
 
   // 2. Compare Summary
-  const isSummaryModified = oldResume.summary.trim() !== newResume.summary.trim();
+  const isSummaryModified = cleanOld.summary.trim() !== cleanNew.summary.trim();
   if (isSummaryModified) {
     items.push({
       id: 'diff-summary',
@@ -74,23 +78,23 @@ export function computeResumeDiff(
       sectionLabel: 'Professional Summary',
       contextTitle: 'Executive Summary',
       type: 'modified',
-      before: oldResume.summary,
-      after: newResume.summary,
+      before: cleanOld.summary,
+      after: cleanNew.summary,
       details: 'Elevated keywords and professional positioning.'
     });
   }
 
   // 3. Compare Experience & Bullets
   const oldExpMap = new Map<string, ExperienceItem>();
-  oldResume.experience.forEach((e) => {
+  cleanOld.experience.forEach((e) => {
     // Key by company + position or id
     const key = `${e.company.toLowerCase().trim()}_${e.position.toLowerCase().trim()}`;
     oldExpMap.set(key, e);
   });
 
-  newResume.experience.forEach((newExp, expIdx) => {
+  cleanNew.experience.forEach((newExp, expIdx) => {
     const key = `${newExp.company.toLowerCase().trim()}_${newExp.position.toLowerCase().trim()}`;
-    const oldExp = oldExpMap.get(key) || oldResume.experience[expIdx];
+    const oldExp = oldExpMap.get(key) || cleanOld.experience[expIdx];
 
     if (!oldExp) {
       // Newly added position
@@ -158,20 +162,21 @@ export function computeResumeDiff(
 
   // 4. Compare Skills
   const oldSkillsFlat = new Set<string>();
-  oldResume.skills.forEach((cat) => {
-    cat.skills.forEach((s) => oldSkillsFlat.add(s.toLowerCase().trim()));
+  cleanOld.skills.forEach((cat) => {
+    getSkillsList(cat).forEach((s) => oldSkillsFlat.add(s.toLowerCase().trim()));
   });
 
-  newResume.skills.forEach((cat) => {
-    cat.skills.forEach((s) => {
+  cleanNew.skills.forEach((cat, idx) => {
+    const categoryTitle = getCategoryTitle(cat, idx);
+    getSkillsList(cat).forEach((s) => {
       const cleanSkill = s.toLowerCase().trim();
       if (!oldSkillsFlat.has(cleanSkill)) {
         addedSkillSet.add(s.trim());
         items.push({
-          id: `diff-skill-${cat.category}-${s}`,
+          id: `diff-skill-${categoryTitle}-${s}`,
           section: 'skills',
           sectionLabel: 'Skills & Expertise',
-          contextTitle: cat.category,
+          contextTitle: categoryTitle,
           type: 'added',
           after: s,
           details: 'Injected ATS target keyword.'
@@ -181,9 +186,9 @@ export function computeResumeDiff(
   });
 
   // 5. Compare Education
-  if (newResume.education.length > oldResume.education.length) {
-    for (let i = oldResume.education.length; i < newResume.education.length; i++) {
-      const edu = newResume.education[i];
+  if (cleanNew.education.length > cleanOld.education.length) {
+    for (let i = cleanOld.education.length; i < cleanNew.education.length; i++) {
+      const edu = cleanNew.education[i];
       items.push({
         id: `diff-edu-${edu.id || i}`,
         section: 'education',
@@ -196,9 +201,9 @@ export function computeResumeDiff(
   }
 
   // 6. Compare Projects
-  if (newResume.projects.length > oldResume.projects.length) {
-    for (let i = oldResume.projects.length; i < newResume.projects.length; i++) {
-      const proj = newResume.projects[i];
+  if (cleanNew.projects.length > cleanOld.projects.length) {
+    for (let i = cleanOld.projects.length; i < cleanNew.projects.length; i++) {
+      const proj = cleanNew.projects[i];
       items.push({
         id: `diff-proj-${proj.id || i}`,
         section: 'projects',
@@ -211,9 +216,9 @@ export function computeResumeDiff(
   }
 
   // 7. Compare Certifications
-  if (newResume.certifications.length > oldResume.certifications.length) {
-    for (let i = oldResume.certifications.length; i < newResume.certifications.length; i++) {
-      const cert = newResume.certifications[i];
+  if (cleanNew.certifications.length > cleanOld.certifications.length) {
+    for (let i = cleanOld.certifications.length; i < cleanNew.certifications.length; i++) {
+      const cert = cleanNew.certifications[i];
       items.push({
         id: `diff-cert-${cert.id || i}`,
         section: 'certifications',

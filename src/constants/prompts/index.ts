@@ -7,4 +7,5 @@ export * from './style';
 export * from './edit';
 export * from './draft';
 export * from './ats';
+export * from './pagination';
 
