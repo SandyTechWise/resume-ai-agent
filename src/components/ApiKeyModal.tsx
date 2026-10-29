@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { LLMConfig, LLMProvider, DiscoveredModel } from '@/types/llm';
 import { PROVIDER_METADATA, ProviderMetadata } from '@/constants/llm';
 import { 
@@ -12,8 +12,7 @@ import {
   RefreshCw, 
   AlertCircle, 
   Radio, 
-  CheckCircle2,
-  AlertTriangle
+  CheckCircle2
 } from 'lucide-react';
 
 interface AiConfigModalProps {
@@ -25,18 +24,28 @@ interface AiConfigModalProps {
   onSaveKey?: (key: string) => void;
 }
 
-export const ApiKeyModal: React.FC<AiConfigModalProps> = ({
-  isOpen,
+interface ModalDialogContentProps {
+  onClose: () => void;
+  config?: LLMConfig;
+  onSaveConfig?: (config: LLMConfig) => void;
+  propApiKey?: string;
+  onSaveKey?: (key: string) => void;
+}
+
+const ApiKeyModalDialog: React.FC<ModalDialogContentProps> = ({
   onClose,
   config,
   onSaveConfig,
-  apiKey: propApiKey,
+  propApiKey,
   onSaveKey
 }) => {
-  const [provider, setProvider] = useState<LLMProvider>(config?.provider || 'gemini');
+  const initialProvider: LLMProvider = config?.provider || 'gemini';
+  const [provider, setProvider] = useState<LLMProvider>(initialProvider);
   const [apiKey, setApiKey] = useState<string>(config?.apiKey || propApiKey || '');
   const [model, setModel] = useState<string>(config?.model || '');
-  const [baseUrl, setBaseUrl] = useState<string>(config?.baseUrl || '');
+  const [baseUrl, setBaseUrl] = useState<string>(
+    config?.baseUrl || PROVIDER_METADATA[initialProvider]?.defaultBaseUrl || ''
+  );
   const [isCustomModel, setIsCustomModel] = useState<boolean>(false);
   const [saved, setSaved] = useState<boolean>(false);
   
@@ -55,24 +64,9 @@ export const ApiKeyModal: React.FC<AiConfigModalProps> = ({
   const [modelTestStatus, setModelTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
   const [modelTestMessage, setModelTestMessage] = useState<string>('');
 
-  useEffect(() => {
-    if (config) {
-      const activeP = config.provider || 'gemini';
-      setProvider(activeP);
-      const activeKey = config.apiKey || propApiKey || '';
-      setApiKey(activeKey);
-      setModel(config.model || '');
-      setBaseUrl(config.baseUrl || PROVIDER_METADATA[activeP]?.defaultBaseUrl || '');
-
-      if (activeKey && activeKey.trim().length > 5) {
-        fetchLiveModels(activeP, activeKey, config.baseUrl);
-      }
-    }
-  }, [config, isOpen]);
-
   const currentMeta: ProviderMetadata = PROVIDER_METADATA[provider];
 
-  const fetchLiveModels = async (
+  const fetchLiveModels = useCallback(async (
     targetProvider = provider,
     targetKey = apiKey,
     targetBaseUrl = baseUrl
@@ -115,7 +109,28 @@ export const ApiKeyModal: React.FC<AiConfigModalProps> = ({
     } finally {
       setIsLoadingModels(false);
     }
-  };
+  }, [provider, apiKey, baseUrl, model]);
+
+  // Initial live models query on mount if key exists
+  useEffect(() => {
+    const keyToQuery = config?.apiKey || propApiKey || '';
+    if (keyToQuery && keyToQuery.trim().length > 5) {
+      queueMicrotask(() => {
+        void fetchLiveModels(initialProvider, keyToQuery, config?.baseUrl || PROVIDER_METADATA[initialProvider]?.defaultBaseUrl || '');
+      });
+    }
+  }, [config?.apiKey, config?.baseUrl, initialProvider, propApiKey, fetchLiveModels]);
+
+  // Keyboard accessibility: close on Escape
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
 
   const handleProviderChange = (p: LLMProvider) => {
     setProvider(p);
@@ -130,7 +145,7 @@ export const ApiKeyModal: React.FC<AiConfigModalProps> = ({
     setSearchQuery('');
 
     if (apiKey && apiKey.trim().length > 5) {
-      fetchLiveModels(p, apiKey, newMeta?.defaultBaseUrl);
+      void fetchLiveModels(p, apiKey, newMeta?.defaultBaseUrl);
     }
   };
 
@@ -223,29 +238,45 @@ export const ApiKeyModal: React.FC<AiConfigModalProps> = ({
   };
 
   // Filtered displayed models based on activeOnly toggle & search query
-  const displayedModels = (() => {
-    return liveModels.filter(m => {
-      if (activeOnly && m.status === 'deprecated') return false;
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase();
-        return m.id.toLowerCase().includes(q) || m.label.toLowerCase().includes(q);
-      }
-      return true;
-    });
-  })();
-
-  if (!isOpen) return null;
+  const displayedModels = liveModels.filter((m) => {
+    if (activeOnly && m.status === 'deprecated') return false;
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      return m.id.toLowerCase().includes(q) || m.label.toLowerCase().includes(q);
+    }
+    return true;
+  });
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal-card wide-modal" onClick={(e) => e.stopPropagation()}>
+    <div 
+      className="modal-backdrop" 
+      onClick={onClose} 
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') onClose();
+      }}
+      role="presentation"
+    >
+      <div 
+        className="modal-card wide-modal" 
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="modal-title-ai-engine"
+        tabIndex={-1}
+      >
         {/* Modal Header */}
         <div className="modal-header">
           <div className="modal-title-row">
             <Cpu size={18} className="text-accent" />
-            <h3 className="modal-title">AI Engine & Dynamic Model Directory</h3>
+            <h3 id="modal-title-ai-engine" className="modal-title">AI Engine & Dynamic Model Directory</h3>
           </div>
-          <button className="btn-close-modal" onClick={onClose}>
+          <button 
+            type="button" 
+            className="btn-close-modal" 
+            onClick={onClose}
+            aria-label="Close modal"
+          >
             <X size={16} />
           </button>
         </div>
@@ -258,7 +289,7 @@ export const ApiKeyModal: React.FC<AiConfigModalProps> = ({
 
           {/* Provider Selection */}
           <div className="input-group">
-            <label className="field-label">1. Select AI Provider</label>
+            <span className="field-label">1. Select AI Provider</span>
             <div className="provider-grid">
               {(Object.keys(PROVIDER_METADATA) as LLMProvider[]).map((p) => {
                 const meta = PROVIDER_METADATA[p];
@@ -279,7 +310,7 @@ export const ApiKeyModal: React.FC<AiConfigModalProps> = ({
           {/* API Key Input */}
           <div className="input-group">
             <div className="flex justify-between items-center">
-              <label className="field-label">2. {currentMeta.label} API Key</label>
+              <label htmlFor="modal-provider-api-key" className="field-label">2. {currentMeta.label} API Key</label>
               <a
                 href={currentMeta.docUrl}
                 target="_blank"
@@ -292,16 +323,17 @@ export const ApiKeyModal: React.FC<AiConfigModalProps> = ({
 
             <div className="flex gap-2">
               <input
+                id="modal-provider-api-key"
                 type="password"
                 className="input-text font-mono flex-1"
                 placeholder={currentMeta.keyPlaceholder}
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
-                onBlur={() => fetchLiveModels()}
+                onBlur={() => { void fetchLiveModels(); }}
               />
               <button
                 type="button"
-                onClick={() => fetchLiveModels()}
+                onClick={() => { void fetchLiveModels(); }}
                 disabled={!apiKey || isLoadingModels}
                 className="btn-fetch-models"
                 title="Query your account to fetch available models dynamically"
@@ -320,7 +352,9 @@ export const ApiKeyModal: React.FC<AiConfigModalProps> = ({
           <div className="input-group">
             <div className="flex justify-between items-center mb-0.5">
               <div className="flex items-center gap-1.5">
-                <label className="field-label mb-0">3. Select Model</label>
+                <label htmlFor={isCustomModel ? "modal-custom-model-input" : "modal-select-model-dropdown"} className="field-label mb-0">
+                  3. Select Model
+                </label>
                 {liveModels.length > 0 && !isLoadingModels && (
                   <span className="live-models-tag">
                     <Radio size={10} className="text-success animate-pulse" />
@@ -346,9 +380,11 @@ export const ApiKeyModal: React.FC<AiConfigModalProps> = ({
                   className="model-search-input font-mono"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
+                  aria-label="Filter retrieved models"
                 />
-                <label className="model-toggle-label" title="Hide retired and unavailable models">
+                <label htmlFor="modal-toggle-active-models" className="model-toggle-label" title="Hide retired and unavailable models">
                   <input
+                    id="modal-toggle-active-models"
                     type="checkbox"
                     checked={activeOnly}
                     onChange={(e) => setActiveOnly(e.target.checked)}
@@ -360,6 +396,7 @@ export const ApiKeyModal: React.FC<AiConfigModalProps> = ({
 
             {isCustomModel ? (
               <input
+                id="modal-custom-model-input"
                 type="text"
                 className="input-text font-mono"
                 placeholder="e.g. meta/llama-3.3-70b-instruct or model-id"
@@ -371,6 +408,7 @@ export const ApiKeyModal: React.FC<AiConfigModalProps> = ({
               />
             ) : (
               <select
+                id="modal-select-model-dropdown"
                 className="input-text"
                 value={model}
                 onChange={(e) => {
@@ -443,11 +481,12 @@ export const ApiKeyModal: React.FC<AiConfigModalProps> = ({
           {/* Base URL (for NVIDIA NIM, OpenRouter, Custom / Ollama) */}
           {(currentMeta.requiresBaseUrl || provider === 'groq' || provider === 'openrouter') && (
             <div className="input-group">
-              <label className="field-label flex items-center gap-1">
+              <label htmlFor="modal-base-url-input" className="field-label flex items-center gap-1">
                 <Server size={12} />
                 <span>API Endpoint Base URL</span>
               </label>
               <input
+                id="modal-base-url-input"
                 type="text"
                 className="input-text font-mono text-xs"
                 placeholder={currentMeta.defaultBaseUrl || 'https://api...'}
@@ -520,5 +559,26 @@ export const ApiKeyModal: React.FC<AiConfigModalProps> = ({
         </div>
       </div>
     </div>
+  );
+};
+
+export const ApiKeyModal: React.FC<AiConfigModalProps> = ({
+  isOpen,
+  onClose,
+  config,
+  onSaveConfig,
+  apiKey: propApiKey,
+  onSaveKey
+}) => {
+  if (!isOpen) return null;
+
+  return (
+    <ApiKeyModalDialog
+      onClose={onClose}
+      config={config}
+      onSaveConfig={onSaveConfig}
+      propApiKey={propApiKey}
+      onSaveKey={onSaveKey}
+    />
   );
 };

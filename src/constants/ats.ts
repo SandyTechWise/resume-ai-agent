@@ -84,6 +84,27 @@ export const ACTION_VERBS: readonly string[] = [
   'upgraded'
 ] as const;
 
+export const UNIVERSAL_PROFESSIONAL_KEYWORDS: readonly string[] = [
+  'leadership',
+  'management',
+  'operations',
+  'strategy',
+  'collaboration',
+  'communication',
+  'analytics',
+  'compliance',
+  'budgeting',
+  'project management',
+  'cross-functional',
+  'client relations',
+  'process improvement',
+  'optimization',
+  'reporting'
+] as const;
+
+/**
+ * @deprecated Use role-specific or candidate-extracted keywords. Retained for backwards compatibility.
+ */
 export const BASELINE_TECH_KEYWORDS: readonly string[] = [
   'react',
   'typescript',

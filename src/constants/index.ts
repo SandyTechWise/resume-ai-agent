@@ -8,3 +8,5 @@ export * from './llm';
 export * from './ats';
 export * from './api';
 export * from './security';
+export * from './secrets';
+export * from './prompts';

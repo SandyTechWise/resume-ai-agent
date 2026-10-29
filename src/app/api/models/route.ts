@@ -7,6 +7,7 @@ import {
 } from '@/constants/llm';
 import { HTTP_STATUS } from '@/constants/api';
 import { SECURITY_CONFIG } from '@/constants/security';
+import { getServerProviderConfig } from '@/constants/secrets';
 import { validateApiBaseUrl } from '@/lib/security/urlValidator';
 import { ValidationError, AuthenticationError, ProviderApiError, handleApiError } from '@/lib/errors/AppError';
 
@@ -42,7 +43,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
 
     const provider: LLMProvider = body.provider || 'gemini';
-    const apiKey = body.apiKey?.trim();
+    const serverKey = getServerProviderConfig(provider).apiKey;
+    const apiKey = body.apiKey?.trim() || serverKey;
     const activeOnly = body.activeOnly ?? true;
     const testModel = body.testModel?.trim();
 
@@ -71,134 +73,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     let discoveredModels: DiscoveredModel[] = [];
 
-    // 1. Google Gemini Live Directory
     if (provider === 'gemini') {
-      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`;
-      const res = await fetch(endpoint);
-
-      if (!res.ok) {
-        const errorText = await res.text();
-        throw new ProviderApiError('Google Gemini', `Failed to query catalog (${res.status}): ${errorText}`);
-      }
-
-      const data = await res.json() as { models?: GeminiRawModel[] };
-      const rawList = data.models || [];
-
-      discoveredModels = rawList
-        .filter((m: GeminiRawModel) => {
-          // Dynamic capability check: model must support text generation
-          const isGeneration = m.supportedGenerationMethods?.includes('generateContent') ?? false;
-          const cleanId = m.name.replace(/^models\//, '').toLowerCase();
-          const isNonChat = NON_CHAT_MODEL_PATTERNS.some(token => cleanId.includes(token));
-          return isGeneration && !isNonChat;
-        })
-        .map((m: GeminiRawModel): DiscoveredModel => {
-          const cleanId = m.name.replace(/^models\//, '');
-          const lowerId = cleanId.toLowerCase();
-
-          // Dynamic category classification
-          let category: DiscoveredModel['category'] = 'general';
-          if (lowerId.includes('flash')) category = 'fast';
-          else if (lowerId.includes('pro')) category = 'reasoning';
-          else if (lowerId.includes('ultra')) category = 'flagship';
-
-          return {
-            id: cleanId,
-            label: `${m.displayName || cleanId} (${cleanId})`,
-            displayName: m.displayName || cleanId,
-            description: m.description,
-            status: 'active',
-            category
-          };
-        });
-
-      // Sort alphabetically by ID
-      discoveredModels.sort((a, b) => a.id.localeCompare(b.id));
-    }
-
-    // 2. Anthropic Claude Live Directory
-    else if (provider === 'anthropic') {
-      const endpoint = `${(resolvedBaseUrl || 'https://api.anthropic.com/v1').replace(/\/+$/, '')}/models`;
-      const res = await fetch(endpoint, {
-        headers: {
-          'x-api-key': apiKey,
-          'anthropic-version': PROVIDER_STANDARD_HEADERS.ANTHROPIC_VERSION
-        }
-      });
-
-      if (!res.ok) {
-        const errorText = await res.text();
-        throw new ProviderApiError('Anthropic Claude', `Catalog request failed (${res.status}): ${errorText}`);
-      }
-
-      const data = await res.json() as { data?: OpenAiRawModel[] };
-      const rawList = data.data || [];
-
-      discoveredModels = rawList.map((m: OpenAiRawModel): DiscoveredModel => {
-        const lowerId = m.id.toLowerCase();
-        let category: DiscoveredModel['category'] = 'general';
-        if (lowerId.includes('haiku')) category = 'fast';
-        else if (lowerId.includes('sonnet') || lowerId.includes('opus')) category = 'flagship';
-
-        return {
-          id: m.id,
-          label: `${m.display_name || m.name || m.id} (${m.id})`,
-          displayName: m.display_name || m.name || m.id,
-          status: 'active',
-          category
-        };
-      });
-
-      discoveredModels.sort((a, b) => a.id.localeCompare(b.id));
-    }
-
-    // 3. OpenAI & OpenAI-Compatible Endpoints (NVIDIA NIM, Groq, OpenRouter, Custom / Ollama)
-    else {
-      const endpoint = `${(resolvedBaseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '')}/models`;
-      const res = await fetch(endpoint, {
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          ...(provider === 'openrouter' ? {
-            'HTTP-Referer': PROVIDER_STANDARD_HEADERS.OPENROUTER_REFERER,
-            'X-Title': PROVIDER_STANDARD_HEADERS.OPENROUTER_TITLE
-          } : {})
-        }
-      });
-
-      if (!res.ok) {
-        const errorText = await res.text();
-        throw new ProviderApiError(preset.label, `Model lookup failed (${res.status}): ${errorText}`);
-      }
-
-      const data = await res.json() as { data?: OpenAiRawModel[] };
-      const rawList = data.data || [];
-
-      discoveredModels = rawList
-        .filter((m: OpenAiRawModel) => {
-          const lowerId = (m.id || '').toLowerCase();
-          return !NON_CHAT_MODEL_PATTERNS.some(token => lowerId.includes(token));
-        })
-        .map((m: OpenAiRawModel): DiscoveredModel => {
-          const lowerId = m.id.toLowerCase();
-          let category: DiscoveredModel['category'] = 'general';
-          if (lowerId.includes('mini') || lowerId.includes('instant') || lowerId.includes('flash') || lowerId.includes('haiku')) {
-            category = 'fast';
-          } else if (lowerId.includes('o1') || lowerId.includes('o3') || lowerId.includes('reason')) {
-            category = 'reasoning';
-          } else if (lowerId.includes('gpt-4') || lowerId.includes('claude-3') || lowerId.includes('llama-3')) {
-            category = 'flagship';
-          }
-
-          return {
-            id: m.id,
-            label: m.name ? `${m.name} (${m.id})` : m.id,
-            displayName: m.name || m.id,
-            status: 'active',
-            category
-          };
-        });
-
-      discoveredModels.sort((a, b) => a.id.localeCompare(b.id));
+      discoveredModels = await fetchGeminiModels(apiKey);
+    } else if (provider === 'anthropic') {
+      discoveredModels = await fetchAnthropicModels(apiKey, resolvedBaseUrl);
+    } else {
+      discoveredModels = await fetchOpenAiCompatibleModels(provider, apiKey, preset.label, resolvedBaseUrl);
     }
 
     const responsePayload: ModelDirectoryResponse = {
@@ -213,6 +93,139 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   } catch (error: unknown) {
     return handleApiError(error, 'Failed to retrieve models from provider.');
   }
+}
+
+function classifyModelCategory(modelId: string): DiscoveredModel['category'] {
+  const lower = modelId.toLowerCase();
+  if (lower.includes('flash') || lower.includes('haiku') || lower.includes('mini') || lower.includes('instant')) {
+    return 'fast';
+  }
+  if (lower.includes('pro') || lower.includes('o1') || lower.includes('o3') || lower.includes('reason')) {
+    return 'reasoning';
+  }
+  if (lower.includes('ultra') || lower.includes('sonnet') || lower.includes('opus') || lower.includes('gpt-4') || lower.includes('llama-3')) {
+    return 'flagship';
+  }
+  return 'general';
+}
+
+/**
+ * Fetch and categorize Google Gemini live models
+ */
+async function fetchGeminiModels(apiKey: string): Promise<DiscoveredModel[]> {
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`;
+  const res = await fetch(endpoint);
+
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new ProviderApiError('Google Gemini', `Failed to query catalog (${res.status}): ${errorText}`);
+  }
+
+  const data = await res.json() as { models?: GeminiRawModel[] };
+  const rawList = data.models || [];
+
+  const discovered = rawList
+    .filter((m: GeminiRawModel) => {
+      const isGeneration = m.supportedGenerationMethods?.includes('generateContent') ?? false;
+      const cleanId = m.name.replace(/^models\//, '').toLowerCase();
+      const isNonChat = NON_CHAT_MODEL_PATTERNS.some(token => cleanId.includes(token));
+      return isGeneration && !isNonChat;
+    })
+    .map((m: GeminiRawModel): DiscoveredModel => {
+      const cleanId = m.name.replace(/^models\//, '');
+      return {
+        id: cleanId,
+        label: `${m.displayName || cleanId} (${cleanId})`,
+        displayName: m.displayName || cleanId,
+        description: m.description,
+        status: 'active',
+        category: classifyModelCategory(cleanId)
+      };
+    });
+
+  discovered.sort((a, b) => a.id.localeCompare(b.id));
+  return discovered;
+}
+
+/**
+ * Fetch and categorize Anthropic Claude live models
+ */
+async function fetchAnthropicModels(apiKey: string, baseUrl?: string): Promise<DiscoveredModel[]> {
+  const endpoint = `${(baseUrl || 'https://api.anthropic.com/v1').replace(/\/+$/, '')}/models`;
+  const res = await fetch(endpoint, {
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': PROVIDER_STANDARD_HEADERS.ANTHROPIC_VERSION
+    }
+  });
+
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new ProviderApiError('Anthropic Claude', `Catalog request failed (${res.status}): ${errorText}`);
+  }
+
+  const data = await res.json() as { data?: OpenAiRawModel[] };
+  const rawList = data.data || [];
+
+  const discovered = rawList.map((m: OpenAiRawModel): DiscoveredModel => {
+    return {
+      id: m.id,
+      label: `${m.display_name || m.name || m.id} (${m.id})`,
+      displayName: m.display_name || m.name || m.id,
+      status: 'active',
+      category: classifyModelCategory(m.id)
+    };
+  });
+
+  discovered.sort((a, b) => a.id.localeCompare(b.id));
+  return discovered;
+}
+
+/**
+ * Fetch and filter OpenAI-compatible live models (OpenAI, Groq, NVIDIA NIM, OpenRouter, Custom)
+ */
+async function fetchOpenAiCompatibleModels(
+  provider: LLMProvider,
+  apiKey: string,
+  providerLabel: string,
+  baseUrl?: string
+): Promise<DiscoveredModel[]> {
+  const endpoint = `${(baseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '')}/models`;
+  const res = await fetch(endpoint, {
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      ...(provider === 'openrouter' ? {
+        'HTTP-Referer': PROVIDER_STANDARD_HEADERS.OPENROUTER_REFERER,
+        'X-Title': PROVIDER_STANDARD_HEADERS.OPENROUTER_TITLE
+      } : {})
+    }
+  });
+
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new ProviderApiError(providerLabel, `Model lookup failed (${res.status}): ${errorText}`);
+  }
+
+  const data = await res.json() as { data?: OpenAiRawModel[] };
+  const rawList = data.data || [];
+
+  const discovered = rawList
+    .filter((m: OpenAiRawModel) => {
+      const lowerId = (m.id || '').toLowerCase();
+      return !NON_CHAT_MODEL_PATTERNS.some(token => lowerId.includes(token));
+    })
+    .map((m: OpenAiRawModel): DiscoveredModel => {
+      return {
+        id: m.id,
+        label: m.name ? `${m.name} (${m.id})` : m.id,
+        displayName: m.name || m.id,
+        status: 'active',
+        category: classifyModelCategory(m.id)
+      };
+    });
+
+  discovered.sort((a, b) => a.id.localeCompare(b.id));
+  return discovered;
 }
 
 /**
@@ -239,7 +252,6 @@ async function verifySingleModel(
       }, { status: HTTP_STATUS.OK });
     }
 
-    // For OpenAI and Anthropic compatible providers, make a 1-token test ping
     const endpoint = provider === 'anthropic'
       ? `${(baseUrl || 'https://api.anthropic.com/v1').replace(/\/+$/, '')}/messages`
       : `${(baseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '')}/chat/completions`;
@@ -248,24 +260,22 @@ async function verifySingleModel(
       'Content-Type': 'application/json'
     };
 
-    let bodyPayload: string;
-
     if (provider === 'anthropic') {
       headers['x-api-key'] = apiKey;
       headers['anthropic-version'] = PROVIDER_STANDARD_HEADERS.ANTHROPIC_VERSION;
-      bodyPayload = JSON.stringify({
-        model: modelId,
-        max_tokens: 2,
-        messages: [{ role: 'user', content: 'ping' }]
-      });
     } else {
       headers['Authorization'] = `Bearer ${apiKey}`;
-      bodyPayload = JSON.stringify({
-        model: modelId,
-        max_tokens: 2,
-        messages: [{ role: 'user', content: 'ping' }]
-      });
+      if (provider === 'openrouter') {
+        headers['HTTP-Referer'] = PROVIDER_STANDARD_HEADERS.OPENROUTER_REFERER;
+        headers['X-Title'] = PROVIDER_STANDARD_HEADERS.OPENROUTER_TITLE;
+      }
     }
+
+    const bodyPayload = JSON.stringify({
+      model: modelId,
+      max_tokens: 2,
+      messages: [{ role: 'user', content: 'ping' }]
+    });
 
     const res = await fetch(endpoint, {
       method: 'POST',

@@ -1,42 +1,52 @@
-import { ResumeData, AtsScoreDetails } from '../types/resume';
+import { ResumeData, AtsScoreDetails, ComposeResumePayload } from '../types/resume';
 import { LLMConfig } from '../types/llm';
 import { generateTextWithLLM } from './llm/client';
 import { heuristicExtractResume } from './documentParser';
 import { 
   ACTION_VERBS, 
   ATS_SCORING_WEIGHTS, 
-  BASELINE_TECH_KEYWORDS, 
+  UNIVERSAL_PROFESSIONAL_KEYWORDS,
   COMMON_STOP_WORDS 
 } from '@/constants/ats';
+import { getServerSecret } from '@/constants/secrets';
+import { 
+  buildResumeParserPrompt, 
+  buildOptimizeResumePrompt, 
+  buildComposeResumePrompt 
+} from '@/constants/prompts';
 
 function resolveLLMConfig(input?: LLMConfig | string): LLMConfig | null {
   if (!input) {
-    if (process.env.GEMINI_API_KEY) {
+    const geminiKey = getServerSecret('GEMINI_API_KEY');
+    if (geminiKey) {
       return { 
         provider: 'gemini', 
-        apiKey: process.env.GEMINI_API_KEY, 
-        model: process.env.GEMINI_MODEL 
+        apiKey: geminiKey, 
+        model: getServerSecret('GEMINI_MODEL') 
       };
     }
-    if (process.env.OPENAI_API_KEY) {
+    const openaiKey = getServerSecret('OPENAI_API_KEY');
+    if (openaiKey) {
       return { 
         provider: 'openai', 
-        apiKey: process.env.OPENAI_API_KEY, 
-        model: process.env.OPENAI_MODEL 
+        apiKey: openaiKey, 
+        model: getServerSecret('OPENAI_MODEL') 
       };
     }
-    if (process.env.ANTHROPIC_API_KEY) {
+    const anthropicKey = getServerSecret('ANTHROPIC_API_KEY');
+    if (anthropicKey) {
       return { 
         provider: 'anthropic', 
-        apiKey: process.env.ANTHROPIC_API_KEY, 
-        model: process.env.ANTHROPIC_MODEL 
+        apiKey: anthropicKey, 
+        model: getServerSecret('ANTHROPIC_MODEL') 
       };
     }
-    if (process.env.NVIDIA_API_KEY) {
+    const nvidiaKey = getServerSecret('NVIDIA_API_KEY');
+    if (nvidiaKey) {
       return { 
         provider: 'nvidia', 
-        apiKey: process.env.NVIDIA_API_KEY, 
-        model: process.env.NVIDIA_MODEL 
+        apiKey: nvidiaKey, 
+        model: getServerSecret('NVIDIA_MODEL') 
       };
     }
     return null;
@@ -44,15 +54,18 @@ function resolveLLMConfig(input?: LLMConfig | string): LLMConfig | null {
 
   if (typeof input === 'string') {
     if (input.startsWith('sk-ant-')) {
-      return { provider: 'anthropic', apiKey: input, model: process.env.ANTHROPIC_MODEL };
-    } else if (input.startsWith('sk-') || input.startsWith('sk-proj-')) {
-      return { provider: 'openai', apiKey: input, model: process.env.OPENAI_MODEL };
-    } else if (input.startsWith('nvapi-')) {
-      return { provider: 'nvidia', apiKey: input, model: process.env.NVIDIA_MODEL };
-    } else if (input.startsWith('gsk_')) {
-      return { provider: 'groq', apiKey: input, model: process.env.GROQ_MODEL };
+      return { provider: 'anthropic', apiKey: input, model: getServerSecret('ANTHROPIC_MODEL') };
     }
-    return { provider: 'gemini', apiKey: input, model: process.env.GEMINI_MODEL };
+    if (input.startsWith('sk-') || input.startsWith('sk-proj-')) {
+      return { provider: 'openai', apiKey: input, model: getServerSecret('OPENAI_MODEL') };
+    }
+    if (input.startsWith('nvapi-')) {
+      return { provider: 'nvidia', apiKey: input, model: getServerSecret('NVIDIA_MODEL') };
+    }
+    if (input.startsWith('gsk_')) {
+      return { provider: 'groq', apiKey: input, model: getServerSecret('GROQ_MODEL') };
+    }
+    return { provider: 'gemini', apiKey: input, model: getServerSecret('GEMINI_MODEL') };
   }
 
   return input;
@@ -70,88 +83,7 @@ export async function extractResumeWithAI(
   }
 
   try {
-    const prompt = `
-You are an expert ATS (Applicant Tracking System) parser and resume engineer.
-Analyze the following raw resume text and extract all details into a clean, structured JSON object matching this exact schema:
-
-{
-  "basics": {
-    "name": "string",
-    "headline": "string (e.g. Senior Full Stack Engineer)",
-    "email": "string",
-    "phone": "string",
-    "location": "string",
-    "website": "string (optional)",
-    "linkedin": "string (optional)",
-    "github": "string (optional)",
-    "portfolio": "string (optional)"
-  },
-  "summary": "string (2-4 sentences high-impact professional overview)",
-  "experience": [
-    {
-      "id": "exp-1",
-      "company": "string",
-      "position": "string",
-      "location": "string (optional)",
-      "startDate": "string",
-      "endDate": "string",
-      "current": boolean,
-      "bullets": [
-        "Action verb + clear impact + metric if available"
-      ],
-      "technologies": ["string"]
-    }
-  ],
-  "education": [
-    {
-      "id": "edu-1",
-      "institution": "string",
-      "degree": "string",
-      "fieldOfStudy": "string",
-      "startDate": "string",
-      "endDate": "string",
-      "gpa": "string (optional)",
-      "honors": "string (optional)",
-      "location": "string (optional)"
-    }
-  ],
-  "skills": [
-    {
-      "id": "skill-1",
-      "category": "string (e.g. Programming Languages, Frameworks, Cloud & DevOps, Core Competencies)",
-      "skills": ["string"]
-    }
-  ],
-  "projects": [
-    {
-      "id": "proj-1",
-      "name": "string",
-      "description": "string",
-      "link": "string (optional)",
-      "technologies": ["string"],
-      "highlights": ["string"]
-    }
-  ],
-  "certifications": [
-    {
-      "id": "cert-1",
-      "name": "string",
-      "issuer": "string",
-      "date": "string (optional)",
-      "url": "string (optional)"
-    }
-  ]
-}
-
-CRITICAL RULES:
-1. Return ONLY the raw valid JSON string. Do not wrap in markdown quotes.
-2. Clean up awkward line wraps and hyphenated words from document artifacts.
-3. Every bullet point should begin with an active action verb.
-4. Ensure all IDs are unique strings.
-
-RAW RESUME TEXT:
-${rawText}
-`;
+    const prompt = buildResumeParserPrompt(rawText);
 
     const responseText = await generateTextWithLLM({
       config,
@@ -177,11 +109,12 @@ export function computeLocalAtsScore(
 ): AtsScoreDetails {
   // 1. Contact Score (max 25)
   let contactScore = 0;
-  if (resume.basics.name && resume.basics.name !== "Professional Candidate") contactScore += 5;
-  if (resume.basics.email && resume.basics.email.includes('@')) contactScore += 5;
-  if (resume.basics.phone) contactScore += 5;
-  if (resume.basics.location) contactScore += 5;
-  if (resume.basics.linkedin || resume.basics.github || resume.basics.website) contactScore += 5;
+  const basics = resume?.basics || { name: '' };
+  if (basics.name && basics.name !== "Professional Candidate") contactScore += 5;
+  if (basics.email?.includes('@')) contactScore += 5;
+  if (basics.phone) contactScore += 5;
+  if (basics.location) contactScore += 5;
+  if (basics.linkedin || basics.github || basics.website) contactScore += 5;
 
   // 2. Formatting & Structure Score (max 25)
   let formattingScore = 0;
@@ -197,8 +130,8 @@ export function computeLocalAtsScore(
 
   const bulletImpacts: AtsScoreDetails['bulletImpacts'] = [];
 
-  resume.experience.forEach(exp => {
-    exp.bullets.forEach(b => {
+  (resume.experience || []).forEach(exp => {
+    (exp.bullets || []).forEach(b => {
       totalBullets++;
       const lower = b.toLowerCase();
       const hasActionVerb = ACTION_VERBS.some(v => lower.startsWith(v) || lower.includes(` ${v} `));
@@ -262,11 +195,34 @@ export function computeLocalAtsScore(
       ? Math.round((matchedKeywords.length / topJdKeywords.length) * ATS_SCORING_WEIGHTS.MAX_KEYWORDS_SCORE)
       : ATS_SCORING_WEIGHTS.DEFAULT_BASELINE_KEYWORDS_SCORE;
   } else {
-    matchedKeywords = BASELINE_TECH_KEYWORDS.filter(k => resumeText.includes(k));
-    missingKeywords = BASELINE_TECH_KEYWORDS.filter(k => !resumeText.includes(k)).slice(0, 4);
-    keywordsScore = Math.round(
-      (matchedKeywords.length / BASELINE_TECH_KEYWORDS.length) * ATS_SCORING_WEIGHTS.MAX_KEYWORDS_SCORE
-    );
+    // Dynamic domain-neutral keyword matching from candidate skills, target role, and headline
+    const candidateSkills = (resume.skills || [])
+      .flatMap(s => s.skills)
+      .map(k => k.toLowerCase().trim())
+      .filter(k => k.length > 2);
+
+    const roleWords = (targetRole || resume.basics.headline || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9#+.\s]/g, ' ')
+      .split(/\s+/)
+      .filter(w => w.length > 3 && !COMMON_STOP_WORDS.includes(w));
+
+    const domainKeywords = Array.from(new Set([...candidateSkills, ...roleWords]));
+    const baselineKeywords = domainKeywords.length >= 4
+      ? domainKeywords
+      : Array.from(new Set([...domainKeywords, ...UNIVERSAL_PROFESSIONAL_KEYWORDS]));
+
+    const expText = (
+      (resume.experience?.flatMap(e => e.bullets).join(' ') || '') + ' ' + 
+      (resume.summary || '')
+    ).toLowerCase();
+
+    matchedKeywords = baselineKeywords.filter(k => expText.includes(k) || resumeText.includes(k));
+    missingKeywords = baselineKeywords.filter(k => !matchedKeywords.includes(k)).slice(0, 4);
+
+    keywordsScore = baselineKeywords.length > 0
+      ? Math.round((matchedKeywords.length / baselineKeywords.length) * ATS_SCORING_WEIGHTS.MAX_KEYWORDS_SCORE)
+      : ATS_SCORING_WEIGHTS.DEFAULT_BASELINE_KEYWORDS_SCORE;
   }
 
   const overallScore = Math.min(
@@ -322,51 +278,7 @@ export async function optimizeResumeWithAI(
   }
 
   try {
-    const prompt = `
-You are a Principal Resume Strategist and ATS Specialist.
-You have been given a candidate's resume data and an optional Target Job Role or Job Description.
-
-TARGET ROLE: ${targetRole || 'Not specified'}
-TARGET JOB DESCRIPTION: ${jobDescription || 'None provided'}
-
-CURRENT RESUME DATA:
-${JSON.stringify(resume, null, 2)}
-
-TASK:
-1. Optimize the professional summary to naturally include high-value keywords for the target role without keyword stuffing.
-2. Polish each work experience bullet point using Google's XYZ formula ("Accomplished [X] as measured by [Y] by doing [Z]").
-   - Elevate passive verbs to high-impact leadership verbs (Architected, Engineered, Spearheaded, Automated).
-   - Inject realistic metrics if vague (or retain candidate's metrics).
-3. Ensure technical skills are cleanly categorized and highlight the most in-demand skills for the target role.
-4. Provide a thorough ATS evaluation with an overall score (0-100), breakdown, matched keywords, missing keywords, and actionable recommendations.
-
-OUTPUT FORMAT:
-Return ONLY valid JSON matching this exact structure:
-{
-  "optimizedResume": <Complete ResumeData object>,
-  "atsAnalysis": {
-    "overallScore": number (0-100),
-    "categories": {
-      "contactScore": number (0-25),
-      "formattingScore": number (0-25),
-      "keywordsScore": number (0-25),
-      "impactScore": number (0-25)
-    },
-    "matchedKeywords": ["string"],
-    "missingKeywords": ["string"],
-    "bulletImpacts": [
-      {
-        "original": "string",
-        "improved": "string",
-        "score": "strong",
-        "reason": "string"
-      }
-    ],
-    "recommendations": ["string"],
-    "jobTitleMatch": "string"
-  }
-}
-`;
+    const prompt = buildOptimizeResumePrompt(resume, targetRole, jobDescription);
 
     const responseText = await generateTextWithLLM({
       config,
@@ -393,9 +305,10 @@ Return ONLY valid JSON matching this exact structure:
 export const optimizeResumeWithGemini = optimizeResumeWithAI;
 
 export async function composeResumeWithAI(
-  payload: import('../types/resume').ComposeResumePayload,
+  payload: ComposeResumePayload,
   llmInput?: LLMConfig | string
 ): Promise<{
+
   resume: ResumeData;
   atsAnalysis: AtsScoreDetails;
   summaryOfChanges: string;
@@ -426,166 +339,7 @@ export async function composeResumeWithAI(
   }
 
   try {
-    let promptObjective = '';
-
-    if (mode === 'scratch') {
-      promptObjective = `
-MODE: RAW PROMPT / SCRATCH BUILDER (User has no existing resume)
-The candidate is providing raw, unstructured career notes, bio, or accomplishments.
-TASK:
-- Structure these notes into an elite, ATS-compliant resume JSON.
-- Synthesize crisp XYZ impact bullets ("Accomplished [X] measured by [Y] by doing [Z]").
-- Categorize technical and leadership skills cleanly.
-- Author an engaging, recruiter-ready professional summary.
-`;
-    } else if (mode === 'template_match') {
-      promptObjective = `
-MODE: TEMPLATE CLONE / REFERENCE STYLE MATCHER
-The user wants their career details formatted and phrased to match the caliber, depth, and density of a REFERENCE RESUME.
-
-REFERENCE BENCHMARK RESUME:
-${referenceResumeText || 'High-caliber tech industry resume standard'}
-
-CANDIDATE DETAILS TO ADAPT:
-${userInput}
-${baseResume ? `CURRENT RESUME DATA: ${JSON.stringify(baseResume, null, 2)}` : ''}
-
-TASK:
-- Map the candidate's actual work history, skills, and education to match the phrasing caliber and high impact of the reference template.
-- DO NOT invent false company names or degrees, but elevate the candidate's actual accomplishments into that tier of execution.
-`;
-    } else if (mode === 'redesign') {
-      promptObjective = `
-MODE: COMPLETE RESUME OVERHAUL & REDESIGN
-The user wants to overhaul their existing resume according to specific redesign directives or career pivot goals.
-
-CURRENT RESUME DATA:
-${baseResume ? JSON.stringify(baseResume, null, 2) : userInput}
-
-REDESIGN DIRECTIVES / TARGET GOALS:
-${instructions || userInput}
-
-TASK:
-- Thoroughly overhaul the summary, bullet points, and highlighted skills to align with the redesign goals.
-- Highlight transferable skills and elevate relevant achievements.
-`;
-    } else if (mode === 'update_merge') {
-      promptObjective = `
-MODE: INCREMENTAL UPDATE & DIFF MERGER
-The user wants to add new achievements (e.g., recent promotion, new job, new certifications, or projects) into their existing resume.
-
-CURRENT RESUME:
-${baseResume ? JSON.stringify(baseResume, null, 2) : 'Existing resume'}
-
-NEW UPDATES TO INTEGRATE:
-${userInput}
-
-TASK:
-- Intelligently merge the new updates into the existing resume without losing or overwriting unmentioned historical items.
-- If a new job/promotion is given, add/update it at the top of the experience list.
-- If new skills or credentials are provided, append them into appropriate categories.
-`;
-    }
-
-    const fullPrompt = `
-You are a Principal Resume Strategist, Executive Career Architect, and ATS Algorithm Expert.
-
-${promptObjective}
-
-TARGET ROLE: ${targetRole || 'Not specified'}
-TARGET JOB DESCRIPTION: ${targetJobDescription || 'None provided'}
-
-ADDITIONAL USER INSTRUCTIONS:
-${instructions || 'Follow best practices for ATS compliance and recruiter readability.'}
-
-REQUIRED OUTPUT FORMAT:
-Return ONLY valid JSON matching this schema:
-{
-  "resume": {
-    "basics": {
-      "name": "string",
-      "headline": "string",
-      "email": "string",
-      "phone": "string",
-      "location": "string",
-      "website": "string",
-      "linkedin": "string",
-      "github": "string"
-    },
-    "summary": "string",
-    "experience": [
-      {
-        "id": "string",
-        "company": "string",
-        "position": "string",
-        "location": "string",
-        "startDate": "string",
-        "endDate": "string",
-        "current": boolean,
-        "bullets": ["string (XYZ formula)"],
-        "technologies": ["string"]
-      }
-    ],
-    "education": [
-      {
-        "id": "string",
-        "institution": "string",
-        "degree": "string",
-        "fieldOfStudy": "string",
-        "endDate": "string",
-        "gpa": "string",
-        "honors": "string"
-      }
-    ],
-    "skills": [
-      {
-        "id": "string",
-        "category": "string",
-        "skills": ["string"]
-      }
-    ],
-    "projects": [
-      {
-        "id": "string",
-        "name": "string",
-        "description": "string",
-        "link": "string",
-        "technologies": ["string"],
-        "highlights": ["string"]
-      }
-    ],
-    "certifications": [
-      {
-        "id": "string",
-        "name": "string",
-        "issuer": "string",
-        "date": "string"
-      }
-    ]
-  },
-  "atsAnalysis": {
-    "overallScore": number (0-100),
-    "categories": {
-      "contactScore": number (0-25),
-      "formattingScore": number (0-25),
-      "keywordsScore": number (0-25),
-      "impactScore": number (0-25)
-    },
-    "matchedKeywords": ["string"],
-    "missingKeywords": ["string"],
-    "bulletImpacts": [
-      {
-        "original": "string",
-        "improved": "string",
-        "score": "strong",
-        "reason": "string"
-      }
-    ],
-    "recommendations": ["string"]
-  },
-  "summaryOfChanges": "string (A 1-2 sentence concise explanation of what was composed or enhanced)"
-}
-`;
+    const fullPrompt = buildComposeResumePrompt(payload);
 
     const responseText = await generateTextWithLLM({
       config,

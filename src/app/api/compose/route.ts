@@ -6,6 +6,7 @@ import { HTTP_STATUS } from '@/constants/api';
 import { SECURITY_CONFIG } from '@/constants/security';
 import { validateApiBaseUrl } from '@/lib/security/urlValidator';
 import { ValidationError, handleApiError } from '@/lib/errors/AppError';
+import { resolveEffectiveLlmConfig } from '@/constants/secrets';
 
 interface ComposeRequestBody extends ComposeResumePayload {
   llmConfig?: LLMConfig;
@@ -39,24 +40,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       throw new ValidationError(`Input exceeds maximum length of ${SECURITY_CONFIG.MAX_PROMPT_INPUT_LENGTH} characters.`);
     }
 
-    // Resolve LLM config from body or secure headers
-    const headerProvider = req.headers.get('x-llm-provider') as LLMProvider | null;
-    const headerApiKey = req.headers.get('x-api-key') || req.headers.get('authorization')?.replace(/^Bearer\s+/i, '');
-    const headerModel = req.headers.get('x-llm-model');
-    const headerBaseUrl = req.headers.get('x-llm-base-url');
-
-    const rawBaseUrl = headerBaseUrl || bodyLlmConfig?.baseUrl;
-    const urlValidation = validateApiBaseUrl(rawBaseUrl);
-    if (!urlValidation.isValid) {
-      throw new ValidationError(urlValidation.error || 'Invalid API base URL.');
-    }
-
-    const activeConfig: LLMConfig = {
-      provider: headerProvider || bodyLlmConfig?.provider || 'gemini',
-      apiKey: headerApiKey || bodyLlmConfig?.apiKey || process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY || '',
-      model: headerModel || bodyLlmConfig?.model,
-      baseUrl: urlValidation.sanitizedUrl
-    };
+    // Resolve effective LLM configuration safely without hardcoded secrets
+    const activeConfig = resolveEffectiveLlmConfig({
+      bodyConfig: bodyLlmConfig,
+      headerApiKey: req.headers.get('x-api-key') || req.headers.get('authorization')?.replace(/^Bearer\s+/i, ''),
+      headerProvider: req.headers.get('x-llm-provider') as LLMProvider | null,
+      headerModel: req.headers.get('x-llm-model'),
+      headerBaseUrl: req.headers.get('x-llm-base-url')
+    });
 
     const payload: ComposeResumePayload = {
       mode,

@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { extractTextFromBuffer } from '@/lib/documentParser';
+import { extractTextFromBuffer, ScannedPdfError } from '@/lib/documentParser';
 import { extractResumeWithAI, computeLocalAtsScore } from '@/lib/gemini';
+import { resumeDataToPlainText } from '@/lib/plainTextFormatter';
 import { LLMConfig, LLMProvider } from '@/types/llm';
 import { HTTP_STATUS, UPLOAD_LIMITS } from '@/constants/api';
-import { validateApiBaseUrl } from '@/lib/security/urlValidator';
+import { resolveEffectiveLlmConfig } from '@/constants/secrets';
 import { ValidationError, handleApiError } from '@/lib/errors/AppError';
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
@@ -22,24 +23,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       }
     }
 
-    if (!llmConfig) {
-      const apiKey = (formData.get('apiKey') as string) || req.headers.get('x-api-key') || req.headers.get('x-gemini-key') || undefined;
-      const provider = (formData.get('provider') as LLMProvider) || (req.headers.get('x-llm-provider') as LLMProvider) || undefined;
-      const model = (formData.get('model') as string) || req.headers.get('x-llm-model') || undefined;
-      const baseUrl = (formData.get('baseUrl') as string) || req.headers.get('x-llm-base-url') || undefined;
-
-      if (apiKey) {
-        llmConfig = { apiKey, provider: provider || 'gemini', model, baseUrl };
-      }
-    }
-
-    if (llmConfig?.baseUrl) {
-      const urlValidation = validateApiBaseUrl(llmConfig.baseUrl);
-      if (!urlValidation.isValid) {
-        throw new ValidationError(urlValidation.error || 'Invalid API base URL.');
-      }
-      llmConfig.baseUrl = urlValidation.sanitizedUrl;
-    }
+    const effectiveConfig = resolveEffectiveLlmConfig({
+      bodyConfig: llmConfig,
+      headerApiKey: (formData.get('apiKey') as string) || req.headers.get('x-api-key') || req.headers.get('x-gemini-key'),
+      headerProvider: (formData.get('provider') as LLMProvider) || (req.headers.get('x-llm-provider') as LLMProvider),
+      headerModel: (formData.get('model') as string) || req.headers.get('x-llm-model'),
+      headerBaseUrl: (formData.get('baseUrl') as string) || req.headers.get('x-llm-base-url')
+    });
 
     let rawText = '';
     let filename = 'pasted_resume.txt';
@@ -76,17 +66,27 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       throw new ValidationError('The uploaded document appears to be empty or contains unreadable text.');
     }
 
-    const resume = await extractResumeWithAI(rawText, llmConfig);
+    const resume = await extractResumeWithAI(rawText, effectiveConfig);
+    const plainText = resumeDataToPlainText(resume);
     const atsAnalysis = computeLocalAtsScore(resume);
 
     return NextResponse.json({
       success: true,
       filename,
       rawTextPreview: rawText.slice(0, 500) + (rawText.length > 500 ? '...' : ''),
+      plainText,
       resume,
       atsAnalysis
     }, { status: HTTP_STATUS.OK });
   } catch (error: unknown) {
+    if (error instanceof ScannedPdfError) {
+      return NextResponse.json({
+        success: false,
+        isScannedPdf: true,
+        error: error.message,
+        suggestion: 'Please upload a digital PDF/DOCX generated from Word/Google Docs, or paste your resume text directly.'
+      }, { status: HTTP_STATUS.UNPROCESSABLE_ENTITY });
+    }
     return handleApiError(error, 'Failed to parse resume document.');
   }
 }

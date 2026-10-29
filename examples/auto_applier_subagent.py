@@ -9,12 +9,20 @@ Workflow:
 4. Auto-applier uploads or renders the tailored resume to submit the job application!
 """
 
+import os
+from typing import Any, Dict, Optional
 import requests
-import json
 
-RESUME_AGENT_API = "http://localhost:3000/api/agent/tailor"
+RESUME_AGENT_API = os.getenv("RESUME_AGENT_API_URL", "http://localhost:3000/api/agent/tailor")
+REQUEST_TIMEOUT_SECONDS = 30
 
-def tailor_resume_for_job(base_resume, job_description, target_role, ai_provider="gemini", api_key=None):
+def tailor_resume_for_job(
+    base_resume: Dict[str, Any],
+    job_description: str,
+    target_role: str,
+    ai_provider: str = "gemini",
+    api_key: Optional[str] = None
+) -> Dict[str, Any]:
     payload = {
         "resume": base_resume,
         "jobPosting": job_description,
@@ -30,11 +38,12 @@ def tailor_resume_for_job(base_resume, job_description, target_role, ai_provider
         }
     }
 
-    response = requests.post(RESUME_AGENT_API, json=payload)
+    response = requests.post(RESUME_AGENT_API, json=payload, timeout=REQUEST_TIMEOUT_SECONDS)
     if response.status_code != 200:
-        raise Exception(f"Failed to tailor resume: {response.text}")
+        raise RuntimeError(f"Failed to tailor resume: {response.text}")
     
     return response.json()
+
 
 if __name__ == "__main__":
     # 1. Base Candidate Profile
@@ -106,6 +115,7 @@ if __name__ == "__main__":
     print(f"📄 Standalone HTML generated: {len(result.get('htmlResume', ''))} characters")
     
     # Save tailored HTML resume
-    with open("tailored_application_resume.html", "w") as f:
+    with open("tailored_application_resume.html", "w", encoding="utf-8") as f:
         f.write(result.get('htmlResume', ''))
     print("💾 Saved tailored resume to 'tailored_application_resume.html'")
+

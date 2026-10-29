@@ -1,46 +1,32 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { ResumeData, ResumeTheme, AtsScoreDetails } from '@/types/resume';
+import { ResumeData, AtsScoreDetails } from '@/types/resume';
 import { LLMConfig } from '@/types/llm';
-import { STORAGE_KEYS } from '@/constants/storage';
-import { PROVIDER_METADATA } from '@/constants/llm';
-import { sampleResume } from '@/data/sampleResume';
-import { computeLocalAtsScore } from '@/lib/gemini';
-import { Navbar } from '@/components/Navbar';
-import { UploadZone } from '@/components/UploadZone';
-import { AtsScoreCard } from '@/components/AtsScoreCard';
-import { ResumeEditor } from '@/components/ResumeEditor';
-import { ResumeViewer } from '@/components/ResumeViewer';
+import { STORAGE_KEYS } from '@/constants';
+import { IntakeScreen } from '@/components/intake/IntakeScreen';
+import { LivePromptWorkspace } from '@/components/workspace/LivePromptWorkspace';
 import { ApiKeyModal } from '@/components/ApiKeyModal';
-import { PromptStudio } from '@/components/PromptStudio';
-import { UploadCloud, CheckCircle2, Sliders, Wand2 } from 'lucide-react';
 
 export default function HomePage() {
-  const [resumeData, setResumeData] = useState<ResumeData>(sampleResume);
-  const [atsScore, setAtsScore] = useState<AtsScoreDetails>(() => computeLocalAtsScore(sampleResume));
-  const [activeTab, setActiveTab] = useState<'upload' | 'prompt' | 'ats' | 'editor'>('upload');
-  const [isProcessing, setIsProcessing] = useState<boolean>(false);
-  const [activeFileName, setActiveFileName] = useState<string>('sample_resume.pdf');
-  const [isKeyModalOpen, setIsKeyModalOpen] = useState<boolean>(false);
+  const [screen, setScreen] = useState<'intake' | 'workspace'>('intake');
+  const [resumeData, setResumeData] = useState<ResumeData | null>(null);
+  const [plainText, setPlainText] = useState<string>('');
+  const [atsScore, setAtsScore] = useState<AtsScoreDetails | null>(null);
+  const [suggestedWords, setSuggestedWords] = useState<string[]>([]);
+  const [targetRole, setTargetRole] = useState<string>('');
 
+  const [isKeyModalOpen, setIsKeyModalOpen] = useState<boolean>(false);
   const [llmConfig, setLlmConfig] = useState<LLMConfig>({
     provider: 'gemini',
     apiKey: '',
     model: ''
   });
 
-  const [theme, setTheme] = useState<ResumeTheme>({
-    template: 'modern',
-    accentColor: '#2563eb',
-    fontSize: 'standard',
-    fontFamily: 'sans',
-    showBorders: true
-  });
-
-  // Load LLM configuration from localStorage if present
+  // Load LLM configuration asynchronously from localStorage on mount
   useEffect(() => {
-    if (typeof window !== 'undefined') {
+    queueMicrotask(() => {
+      if (typeof window === 'undefined') return;
       const storedConfig = localStorage.getItem(STORAGE_KEYS.LLM_CONFIG);
       if (storedConfig) {
         try {
@@ -58,7 +44,7 @@ export default function HomePage() {
           });
         }
       }
-    }
+    });
   }, []);
 
   const handleSaveConfig = (newConfig: LLMConfig) => {
@@ -68,153 +54,55 @@ export default function HomePage() {
     }
   };
 
-  const handleDataLoaded = (
-    data: ResumeData,
-    newScore?: AtsScoreDetails,
-    filename?: string
-  ) => {
-    setResumeData(data);
-    if (filename) setActiveFileName(filename);
-    const calculatedScore = newScore || computeLocalAtsScore(data);
-    setAtsScore(calculatedScore);
-    // Switch to ATS Optimizer tab on successful document upload
-    setActiveTab('ats');
+  const handleIntakeComplete = (data: {
+    resume: ResumeData;
+    plainText: string;
+    atsAnalysis: AtsScoreDetails;
+    suggestedWords: string[];
+    targetRole?: string;
+  }) => {
+    setResumeData(data.resume);
+    setPlainText(data.plainText);
+    setAtsScore(data.atsAnalysis);
+    setSuggestedWords(data.suggestedWords);
+    if (data.targetRole) {
+      setTargetRole(data.targetRole);
+    }
+    setScreen('workspace');
   };
 
-  const handleOptimized = (newResume: ResumeData, newScore: AtsScoreDetails) => {
-    setResumeData(newResume);
-    setAtsScore(newScore);
+  const handleBackToIntake = () => {
+    setScreen('intake');
   };
-
-  const activeProviderMeta = PROVIDER_METADATA[llmConfig.provider || 'gemini'];
-  const providerLabel = activeProviderMeta
-    ? `${activeProviderMeta.label.split(' ')[0]}`
-    : 'AI';
 
   return (
-    <div className="min-h-screen relative flex flex-col">
-      {/* Background glow atmosphere */}
-      <div className="app-atmosphere" />
+    <main style={{ minHeight: '100vh', backgroundColor: '#f8fafc' }}>
+      {screen === 'intake' || !resumeData || !atsScore ? (
+        <IntakeScreen
+          llmConfig={llmConfig}
+          onOpenKeyModal={() => setIsKeyModalOpen(true)}
+          onComplete={handleIntakeComplete}
+        />
+      ) : (
+        <LivePromptWorkspace
+          initialResume={resumeData}
+          initialPlainText={plainText}
+          initialAtsScore={atsScore}
+          initialSuggestedWords={suggestedWords}
+          targetRole={targetRole}
+          llmConfig={llmConfig}
+          onBackToIntake={handleBackToIntake}
+          onOpenKeyModal={() => setIsKeyModalOpen(true)}
+        />
+      )}
 
-      {/* Top Navbar */}
-      <Navbar
-        theme={theme}
-        onThemeChange={setTheme}
-        hasApiKey={Boolean(llmConfig.apiKey)}
-        activeProviderLabel={providerLabel}
-        onOpenKeyModal={() => setIsKeyModalOpen(true)}
-        atsScore={atsScore.overallScore}
-      />
-
-      {/* Main Split Interface */}
-      <main className="main-app-layout">
-        {/* Left Workbench (Controls, Upload, Prompt Studio, ATS, Editor) */}
-        <section className="workbench-panel">
-          {/* Workbench Tabs */}
-          <nav className="workbench-tabs-nav" aria-label="Workbench sections">
-            <button
-              id="tab-upload-btn"
-              type="button"
-              onClick={() => setActiveTab('upload')}
-              className={`wb-tab-btn ${activeTab === 'upload' ? 'tab-active' : ''}`}
-            >
-              <UploadCloud size={14} />
-              <span>1. Files</span>
-            </button>
-
-            <button
-              id="tab-prompt-btn"
-              type="button"
-              onClick={() => setActiveTab('prompt')}
-              className={`wb-tab-btn ${activeTab === 'prompt' ? 'tab-active' : ''}`}
-            >
-              <Wand2 size={14} />
-              <span>2. Prompt Studio</span>
-            </button>
-
-            <button
-              id="tab-ats-btn"
-              type="button"
-              onClick={() => setActiveTab('ats')}
-              className={`wb-tab-btn ${activeTab === 'ats' ? 'tab-active' : ''}`}
-            >
-              <CheckCircle2 size={14} />
-              <span>3. ATS</span>
-              <span className="tab-badge">{atsScore.overallScore}%</span>
-            </button>
-
-            <button
-              id="tab-editor-btn"
-              type="button"
-              onClick={() => setActiveTab('editor')}
-              className={`wb-tab-btn ${activeTab === 'editor' ? 'tab-active' : ''}`}
-            >
-              <Sliders size={14} />
-              <span>4. Editor</span>
-            </button>
-          </nav>
-
-          {/* Workbench Scroll Area */}
-          <div className="workbench-scroll-area">
-            {activeTab === 'upload' && (
-              <UploadZone
-                onDataLoaded={handleDataLoaded}
-                apiKey={llmConfig.apiKey}
-                llmConfig={llmConfig}
-                isProcessing={isProcessing}
-                setIsProcessing={setIsProcessing}
-              />
-            )}
-
-            {activeTab === 'prompt' && (
-              <PromptStudio
-                currentResume={resumeData}
-                onApplyResume={(updated, newAts) => {
-                  setResumeData(updated);
-                  const score = newAts || computeLocalAtsScore(updated);
-                  setAtsScore(score);
-                }}
-                llmConfig={llmConfig}
-              />
-            )}
-
-            {activeTab === 'ats' && (
-              <AtsScoreCard
-                scoreDetails={atsScore}
-                resumeData={resumeData}
-                onOptimized={handleOptimized}
-                apiKey={llmConfig.apiKey}
-                llmConfig={llmConfig}
-              />
-            )}
-
-            {activeTab === 'editor' && (
-              <ResumeEditor
-                data={resumeData}
-                onChange={(updated) => {
-                  setResumeData(updated);
-                  setAtsScore(computeLocalAtsScore(updated));
-                }}
-                apiKey={llmConfig.apiKey}
-                llmConfig={llmConfig}
-              />
-            )}
-          </div>
-        </section>
-
-        {/* Right High-Fidelity Preview Panel */}
-        <section className="preview-panel">
-          <ResumeViewer data={resumeData} theme={theme} />
-        </section>
-      </main>
-
-      {/* Multi-Model AI Config Modal */}
+      {/* API Key Modal */}
       <ApiKeyModal
         isOpen={isKeyModalOpen}
         onClose={() => setIsKeyModalOpen(false)}
         config={llmConfig}
         onSaveConfig={handleSaveConfig}
       />
-    </div>
+    </main>
   );
 }

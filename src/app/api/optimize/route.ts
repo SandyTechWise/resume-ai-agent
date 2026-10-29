@@ -3,7 +3,7 @@ import { optimizeResumeWithAI } from '@/lib/gemini';
 import { ResumeData } from '@/types/resume';
 import { LLMConfig, LLMProvider } from '@/types/llm';
 import { HTTP_STATUS } from '@/constants/api';
-import { validateApiBaseUrl } from '@/lib/security/urlValidator';
+import { resolveEffectiveLlmConfig } from '@/constants/secrets';
 import { ValidationError, handleApiError } from '@/lib/errors/AppError';
 
 interface OptimizeRequestBody {
@@ -29,18 +29,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       throw new ValidationError('Valid resume data is required for ATS optimization.');
     }
 
-    const rawBaseUrl = req.headers.get('x-llm-base-url') || llmConfig?.baseUrl;
-    const urlValidation = validateApiBaseUrl(rawBaseUrl || undefined);
-    if (!urlValidation.isValid) {
-      throw new ValidationError(urlValidation.error || 'Invalid API base URL.');
-    }
-
-    const activeConfig: LLMConfig = llmConfig || {
-      apiKey: apiKey || req.headers.get('x-api-key') || req.headers.get('x-gemini-key') || '',
-      provider: (req.headers.get('x-llm-provider') as LLMProvider) || 'gemini',
-      model: req.headers.get('x-llm-model') || undefined,
-      baseUrl: urlValidation.sanitizedUrl
-    };
+    const activeConfig = resolveEffectiveLlmConfig({
+      bodyConfig: llmConfig || (apiKey ? { apiKey } : undefined),
+      headerApiKey: req.headers.get('x-api-key') || req.headers.get('x-gemini-key'),
+      headerProvider: req.headers.get('x-llm-provider') as LLMProvider,
+      headerModel: req.headers.get('x-llm-model'),
+      headerBaseUrl: req.headers.get('x-llm-base-url')
+    });
 
     const result = await optimizeResumeWithAI(
       resume,

@@ -2,8 +2,10 @@ import { LLMConfig, LLMProvider } from '@/types/llm';
 import { 
   PROVIDER_METADATA, 
   PROVIDER_STANDARD_HEADERS, 
-  LLM_GENERATION_DEFAULTS 
+  LLM_GENERATION_DEFAULTS,
+  ProviderMetadata
 } from '@/constants/llm';
+
 import { validateApiBaseUrl } from '@/lib/security/urlValidator';
 import { ValidationError, AuthenticationError, ProviderApiError } from '@/lib/errors/AppError';
 
@@ -58,73 +60,101 @@ export async function generateTextWithLLM({
     throw new ValidationError(urlValidation.error || 'Invalid API base URL.');
   }
 
-  // 1. Google Gemini Provider
   if (provider === 'gemini') {
-    const { GoogleGenAI } = await import('@google/genai');
-    const ai = new GoogleGenAI({ apiKey });
-    const fullPrompt = systemPrompt 
-      ? `${systemPrompt}\n\nUSER REQUEST:\n${userPrompt}`
-      : userPrompt;
-
-    try {
-      const res = await ai.models.generateContent({
-        model,
-        contents: fullPrompt,
-        config: jsonMode ? { responseMimeType: 'application/json' } : undefined
-      });
-
-      const output = res.text || '';
-      return cleanJsonResponse(output);
-    } catch (err: unknown) {
-      const errorMessage = extractErrorMessage(err);
-      if (jsonMode && errorMessage.toLowerCase().includes('json mode is not enabled')) {
-        try {
-          const fallbackRes = await ai.models.generateContent({
-            model,
-            contents: `${fullPrompt}\n\nIMPORTANT: Return ONLY valid JSON matching the requested schema. No conversational text.`
-          });
-          const output = fallbackRes.text || '';
-          return cleanJsonResponse(output);
-        } catch (retryErr: unknown) {
-          throw new ProviderApiError('Google Gemini', extractErrorMessage(retryErr));
-        }
-      }
-      throw new ProviderApiError('Google Gemini', errorMessage);
-    }
+    return generateGeminiContent(apiKey, model, systemPrompt, userPrompt, jsonMode);
   }
 
-  // 2. Anthropic Claude Provider
   if (provider === 'anthropic') {
     const baseUrl = urlValidation.sanitizedUrl || meta?.defaultBaseUrl || 'https://api.anthropic.com/v1';
-    const endpoint = `${baseUrl.replace(/\/+$/, '')}/messages`;
-
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': PROVIDER_STANDARD_HEADERS.ANTHROPIC_VERSION
-      },
-      body: JSON.stringify({
-        model,
-        max_tokens: LLM_GENERATION_DEFAULTS.MAX_OUTPUT_TOKENS,
-        ...(systemPrompt ? { system: systemPrompt } : {}),
-        messages: [{ role: 'user', content: userPrompt }]
-      })
-    });
-
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new ProviderApiError('Anthropic Claude', `Inference request failed (${res.status}): ${errText}`);
-    }
-
-    const data = await res.json() as AnthropicResponse;
-    const content = data.content?.[0]?.text || '';
-    return cleanJsonResponse(content);
+    return generateAnthropicContent(apiKey, model, baseUrl, systemPrompt, userPrompt);
   }
 
-  // 3. OpenAI & OpenAI-Compatible Endpoints (NVIDIA NIM, Groq, OpenRouter, Custom / Ollama)
   const baseUrl = (urlValidation.sanitizedUrl || meta?.defaultBaseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '');
+  return generateOpenAiContent(provider, apiKey, model, baseUrl, systemPrompt, userPrompt, jsonMode, meta);
+}
+
+async function generateGeminiContent(
+  apiKey: string,
+  model: string,
+  systemPrompt: string | undefined,
+  userPrompt: string,
+  jsonMode: boolean
+): Promise<string> {
+  const { GoogleGenAI } = await import('@google/genai');
+  const ai = new GoogleGenAI({ apiKey });
+  const fullPrompt = systemPrompt 
+    ? `${systemPrompt}\n\nUSER REQUEST:\n${userPrompt}`
+    : userPrompt;
+
+  try {
+    const res = await ai.models.generateContent({
+      model,
+      contents: fullPrompt,
+      config: jsonMode ? { responseMimeType: 'application/json' } : undefined
+    });
+
+    return cleanJsonResponse(res.text || '');
+  } catch (err: unknown) {
+    const errorMessage = extractErrorMessage(err);
+    if (jsonMode && errorMessage.toLowerCase().includes('json mode is not enabled')) {
+      try {
+        const fallbackRes = await ai.models.generateContent({
+          model,
+          contents: `${fullPrompt}\n\nIMPORTANT: Return ONLY valid JSON matching the requested schema. No conversational text.`
+        });
+        return cleanJsonResponse(fallbackRes.text || '');
+      } catch (retryErr: unknown) {
+        throw new ProviderApiError('Google Gemini', extractErrorMessage(retryErr));
+      }
+    }
+    throw new ProviderApiError('Google Gemini', errorMessage);
+  }
+}
+
+async function generateAnthropicContent(
+  apiKey: string,
+  model: string,
+  baseUrl: string,
+  systemPrompt: string | undefined,
+  userPrompt: string
+): Promise<string> {
+  const endpoint = `${baseUrl.replace(/\/+$/, '')}/messages`;
+
+  const res = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': PROVIDER_STANDARD_HEADERS.ANTHROPIC_VERSION
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: LLM_GENERATION_DEFAULTS.MAX_OUTPUT_TOKENS,
+      ...(systemPrompt ? { system: systemPrompt } : {}),
+      messages: [{ role: 'user', content: userPrompt }]
+    })
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new ProviderApiError('Anthropic Claude', `Inference request failed (${res.status}): ${errText}`);
+  }
+
+  const data = await res.json() as AnthropicResponse;
+  const content = data.content?.[0]?.text || '';
+  return cleanJsonResponse(content);
+}
+
+async function generateOpenAiContent(
+  provider: LLMProvider,
+  apiKey: string,
+  model: string,
+  baseUrl: string,
+  systemPrompt: string | undefined,
+  userPrompt: string,
+  jsonMode: boolean,
+  meta?: ProviderMetadata
+): Promise<string> {
   const endpoint = `${baseUrl}/chat/completions`;
 
   const messages: ChatCompletionMessage[] = [];
@@ -186,9 +216,12 @@ function extractErrorMessage(err: unknown): string {
 function cleanJsonResponse(raw: string): string {
   let cleaned = raw.trim();
   if (cleaned.startsWith('```json')) {
-    cleaned = cleaned.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+    cleaned = cleaned.slice(7).trim();
   } else if (cleaned.startsWith('```')) {
-    cleaned = cleaned.replace(/^```\s*/, '').replace(/\s*```$/, '');
+    cleaned = cleaned.slice(3).trim();
   }
-  return cleaned.trim();
+  if (cleaned.endsWith('```')) {
+    cleaned = cleaned.slice(0, -3).trim();
+  }
+  return cleaned;
 }

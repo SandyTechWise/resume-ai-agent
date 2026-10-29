@@ -4,8 +4,10 @@ import { renderStandaloneResumeHtml } from '@/lib/htmlResumeRenderer';
 import { LLMConfig, LLMProvider } from '@/types/llm';
 import { ResumeData, TemplateType, AccentColor } from '@/types/resume';
 import { HTTP_STATUS } from '@/constants/api';
+import { PROVIDER_METADATA } from '@/constants/llm';
 import { validateApiBaseUrl } from '@/lib/security/urlValidator';
 import { ValidationError, handleApiError } from '@/lib/errors/AppError';
+import { resolveEffectiveLlmConfig } from '@/constants/secrets';
 
 interface TailorRequestBody {
   resume?: ResumeData;
@@ -38,28 +40,27 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       options = {}
     } = body;
 
-    // 1. Resolve LLM configuration from secure headers or body
-    const headerProvider = req.headers.get('x-llm-provider') as LLMProvider | null;
-    const headerApiKey = req.headers.get('x-api-key') || req.headers.get('authorization')?.replace(/^Bearer\s+/i, '');
-    const headerModel = req.headers.get('x-llm-model');
-    const headerBaseUrl = req.headers.get('x-llm-base-url');
+    // 1. Resolve LLM configuration safely without hardcoded secrets
+    const rawHeaderProvider = req.headers.get('x-llm-provider');
+    const headerProvider = (rawHeaderProvider && rawHeaderProvider in PROVIDER_METADATA) 
+      ? (rawHeaderProvider as LLMProvider) 
+      : null;
 
-    const rawBaseUrl = headerBaseUrl || bodyLlmConfig?.baseUrl;
-    const urlValidation = validateApiBaseUrl(rawBaseUrl || undefined);
-    if (!urlValidation.isValid) {
-      throw new ValidationError(urlValidation.error || 'Invalid API base URL.');
-    }
+    const authHeader = req.headers.get('authorization');
+    const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : undefined;
+    const headerApiKey = req.headers.get('x-api-key') || bearerToken;
 
-    const activeConfig: LLMConfig = {
-      provider: headerProvider || bodyLlmConfig?.provider || 'gemini',
-      apiKey: headerApiKey || bodyLlmConfig?.apiKey || process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY || '',
-      model: headerModel || bodyLlmConfig?.model,
-      baseUrl: urlValidation.sanitizedUrl
-    };
+    const activeConfig = resolveEffectiveLlmConfig({
+      bodyConfig: bodyLlmConfig,
+      headerApiKey,
+      headerProvider,
+      headerModel: req.headers.get('x-llm-model'),
+      headerBaseUrl: req.headers.get('x-llm-base-url')
+    });
 
     // 2. Obtain base resume data
     let baseResume: ResumeData;
-    if (resume && resume.basics) {
+    if (resume?.basics) {
       baseResume = resume;
     } else if (rawResumeText && rawResumeText.trim().length > 20) {
       baseResume = await extractResumeWithAI(rawResumeText, activeConfig);
@@ -82,14 +83,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     );
 
     // 4. Optionally generate standalone HTML
-    let htmlResume: string | undefined = undefined;
-    if (options.includeHtml !== false) {
-      htmlResume = renderStandaloneResumeHtml(
-        optimizedResume,
-        options.template || 'modern',
-        options.accentColor || '#2563eb'
-      );
-    }
+    const htmlResume = options.includeHtml !== false
+      ? renderStandaloneResumeHtml(
+          optimizedResume,
+          options.template || 'modern',
+          options.accentColor || '#2563eb'
+        )
+      : undefined;
 
     return NextResponse.json({
       success: true,
